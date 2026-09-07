@@ -4,7 +4,7 @@
 # MAGIC
 # MAGIC - **Propósito:** Manter o histórico das alterações do cadastro mestre de materiais.
 # MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
-# MAGIC - **Saídas:** `pr_cadastrao.material_historical` e `_agents_databases.material_historical`
+# MAGIC - **Saídas:** `pr_cadastrao.material_spec_changes` e `_agents_databases.material_spec_changes`
 # MAGIC - **Chave:** Empresa + Material + Centro · **Carga:** Mensal, SCD Type 2
 
 # COMMAND ----------
@@ -215,8 +215,8 @@ from pyspark.sql import functions as F
 import uuid
 
 SOURCE_PATH = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/"
-MAIN_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_historical"
-AGENTS_TABLE = "parts_hdbk_sandbox._agents_databases.material_historical"
+MAIN_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_spec_changes"
+AGENTS_TABLE = "parts_hdbk_sandbox._agents_databases.material_spec_changes"
 
 BUSINESS_KEY_COLUMNS = ["empresa", "material", "centro"]
 TRACKED_COLUMNS = [
@@ -287,7 +287,12 @@ print(f"Data de referência do snapshot: {REFERENCE_DATE.strftime('%Y-%m-%d')}")
 print(f"Carga inicial (tabela vazia): {is_initial_load}")
 print(f"start_date efetivo: {'1900-01-01 (sentinel)' if is_initial_load else REFERENCE_DATE.strftime('%Y-%m-%d')}")
 
-source_df = df.select(*INCLUDED_SOURCE_COLUMNS).dropDuplicates()
+# --- Filtro por tipo de material (apenas ZHAW, ZFER, ZRO1) ---
+MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
+df_filtered = df.filter(F.col("tipo_de_material").isin(MATERIAL_TYPES))
+print(f"Registros após filtro tipo_de_material {MATERIAL_TYPES}: {df_filtered.count()}")
+
+source_df = df_filtered.select(*INCLUDED_SOURCE_COLUMNS).dropDuplicates()
 
 hash_expression = F.sha2(
     F.concat_ws(
@@ -543,7 +548,7 @@ print(f"Carga SCD2 concluída na réplica adicional: {AGENTS_TABLE}")
 # MAGIC     SUM(CASE WHEN is_current THEN 1 ELSE 0 END) AS current_versions,
 # MAGIC     MIN(start_date) AS first_start_date,
 # MAGIC     MAX(COALESCE(end_date, start_date)) AS last_change_date
-# MAGIC   FROM parts_hdbk_sandbox.pr_cadastrao.material_historical
+# MAGIC   FROM parts_hdbk_sandbox.pr_cadastrao.material_spec_changes
 # MAGIC   GROUP BY empresa, material, centro
 # MAGIC )
 # MAGIC SELECT

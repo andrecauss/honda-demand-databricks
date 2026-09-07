@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # 2.2 — Snapshot de estoque de materiais
 # MAGIC
@@ -213,7 +217,12 @@ INTEGER_COLUMNS = [
 ]
 FLOAT_COLUMNS = ["preco_de_rede_price_de_venda_liquida"]
 
-inventory_df = df.select(*INVENTORY_COLUMNS).dropDuplicates(["empresa", "material", "centro"])
+# --- Filtro por tipo de material (apenas ZHAW, ZFER, ZRO1) ---
+MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
+df_filtered = df.filter(F.col("tipo_de_material").isin(MATERIAL_TYPES))
+print(f"Registros após filtro tipo_de_material {MATERIAL_TYPES}: {df_filtered.count()}")
+
+inventory_df = df_filtered.select(*INVENTORY_COLUMNS).dropDuplicates(["empresa", "material", "centro"])
 
 int_exprs = {
     c: F.regexp_replace(F.col(c), r"[^\d\-]", "").cast("int")
