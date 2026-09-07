@@ -43,7 +43,7 @@ flowchart TD
 | Raw | `dt_sales_orders.raw_sales_order` | Ordens de venda do SAP |
 | Trusted | `pr_cadastrao.material_cadastrao` | Cadastro atual de materiais |
 | Trusted | `pr_cadastrao.material_inventory_history` | Snapshots mensais de estoque |
-| Trusted | `pr_cadastrao.material_historical` | Histórico SCD2 de materiais |
+| Trusted | `pr_cadastrao.material_spec_changes` | Histórico SCD2 dos campos técnicos por empresa e material |
 | Trusted | `pr_cadastrao.material_cadeia` | Item principal da cadeia de materiais |
 | Trusted | `dm_customers.knvv_sap` | Atributos comerciais dos clientes |
 | Trusted | `dm_customers.kna1_sap` | Dados gerais dos clientes |
@@ -82,7 +82,7 @@ evolução planejada, mas ainda não possuem implementação neste repositório.
 | `2.1_ingest_refined_material_cadastrao` | Consolida o cadastro atual de materiais | `material_cadastrao` |
 | `2.2_ingest_refined_material_stock_snapshot` | Registra o snapshot mensal de estoque e preço | `material_inventory_history` |
 | `migrations/001_migrate_inventory_price_float_to_decimal` | Converte uma tabela existente de `FLOAT` para `DECIMAL(18,2)` | Migração única |
-| `2.3_ingest_refined_material_historical` | Mantém o histórico SCD Type 2 e arquiva os arquivos | `material_historical` |
+| `2.3_ingest_refined_material_historical` | Mantém o histórico SCD Type 2 dos campos técnicos | `material_spec_changes` |
 | `3.1_ingest_refined_material_cadeia` | Define o item principal da cadeia | `material_cadeia` |
 | `4.1_ingest_customer_knvv_sap` | Consolida atributos comerciais de clientes | `knvv_sap` |
 | `4.2_ingest_customer_kna1_sap` | Consolida dados gerais de clientes | `kna1_sap` |
@@ -113,14 +113,15 @@ Depois utilize o fluxo recorrente.
 ### Migração do preço de estoque
 
 Em ambientes nos quais `material_inventory_history` já existe com o preço em
-`FLOAT`, execute uma única vez, antes da nova versão do notebook 2.2:
+`FLOAT` ou `DOUBLE`, execute uma única vez, antes da nova versão do notebook 2.2:
 
 ```text
 migrations/001_migrate_inventory_price_float_to_decimal
 ```
 
-A migração valida perda de precisão, reescreve a tabela como `DECIMAL(18,2)` e
-restaura a versão Delta anterior automaticamente se a validação final falhar.
+A migração bloqueia valores incompatíveis com duas casas decimais, reescreve a
+tabela como `DECIMAL(18,2)` e restaura a versão Delta anterior se a validação
+final falhar. Durante essa execução, não pode haver escrita concorrente na tabela.
 
 ### Fluxo recorrente
 
@@ -130,7 +131,7 @@ restaura a versão Delta anterior automaticamente se a validação final falhar.
 
 2.1_ingest_refined_material_cadastrao  # Cadastro atual
 2.2_ingest_refined_material_stock_snapshot
-2.3_ingest_refined_material_historical # Executar após 2.2; move os arquivos
+2.3_ingest_refined_material_historical # Executar após 2.2
 3.1_ingest_refined_material_cadeia
 4.1_ingest_customer_knvv_sap
 4.2_ingest_customer_kna1_sap
