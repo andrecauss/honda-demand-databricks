@@ -32,9 +32,9 @@ Exemplo:
 # 2.3 — Histórico de materiais (SCD2)
 
 - **Propósito:** Manter o histórico das alterações do cadastro de materiais.
-- **Entrada:** `pr_cadastrao.material_cadastrao`
-- **Saída:** `pr_cadastrao.material_historical`
-- **Chave:** Empresa + Material + Centro · **Carga:** Mensal, SCD Type 2
+- **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
+- **Saída:** `pr_cadastrao.material_spec_changes`
+- **Chave:** Empresa + Material · **Carga:** Mensal, SCD Type 2
 ```
 
 No formato Databricks Source `.py`, usar:
@@ -45,9 +45,9 @@ No formato Databricks Source `.py`, usar:
 # MAGIC # 2.3 — Histórico de materiais (SCD2)
 # MAGIC
 # MAGIC - **Propósito:** Manter o histórico das alterações do cadastro de materiais.
-# MAGIC - **Entrada:** `pr_cadastrao.material_cadastrao`
-# MAGIC - **Saída:** `pr_cadastrao.material_historical`
-# MAGIC - **Chave:** Empresa + Material + Centro · **Carga:** Mensal, SCD Type 2
+# MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
+# MAGIC - **Saída:** `pr_cadastrao.material_spec_changes`
+# MAGIC - **Chave:** Empresa + Material · **Carga:** Mensal, SCD Type 2
 
 # COMMAND ----------
 ```
