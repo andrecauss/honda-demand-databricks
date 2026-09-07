@@ -218,7 +218,7 @@ INTEGER_COLUMNS = [
     "estoque_devolucoes", "saldo_da_carteira_de_pedidos",
     "quantidade_em_pi", "quantidade_em_bo",
 ]
-FLOAT_COLUMNS = ["preco_de_rede_price_de_venda_liquida"]
+DECIMAL_COLUMNS = ["preco_de_rede_price_de_venda_liquida"]
 BUSINESS_KEY_COLUMNS = ["empresa", "material", "centro"]
 MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
 
@@ -309,7 +309,7 @@ parsed_columns = {
     },
     **{
         f"__parsed_{column_name}": normalize_decimal_string(column_name).cast("decimal(38,6)")
-        for column_name in FLOAT_COLUMNS
+        for column_name in DECIMAL_COLUMNS
     },
 }
 parsed_df = inventory_source_df.withColumns(parsed_columns)
@@ -332,22 +332,33 @@ for column_name in INTEGER_COLUMNS:
         else invalid_numeric_condition | current_condition
     )
 
-for column_name in FLOAT_COLUMNS:
+for column_name in DECIMAL_COLUMNS:
     original = F.trim(F.col(column_name).cast("string"))
     parsed = F.col(f"__parsed_{column_name}")
-    current_condition = original.isNotNull() & (original != "") & parsed.isNull()
+    target_decimal = F.expr(
+        f"try_cast(`__parsed_{column_name}` AS DECIMAL(18,2))"
+    )
+    current_condition = (
+        original.isNotNull()
+        & (original != "")
+        & (
+            parsed.isNull()
+            | target_decimal.isNull()
+            | (parsed != target_decimal.cast("decimal(38,6)"))
+        )
+    )
     invalid_numeric_condition = invalid_numeric_condition | current_condition
 
 invalid_numeric_rows = (
     parsed_df
     .filter(invalid_numeric_condition)
-    .select(*BUSINESS_KEY_COLUMNS, *INTEGER_COLUMNS, *FLOAT_COLUMNS)
+    .select(*BUSINESS_KEY_COLUMNS, *INTEGER_COLUMNS, *DECIMAL_COLUMNS)
     .limit(10)
     .collect()
 )
 if invalid_numeric_rows:
     raise ValueError(
-        "A carga contém quantidades ou preços em formato inválido. "
+        "A carga contém quantidades inválidas ou preços incompatíveis com DECIMAL(18,2). "
         f"Amostra: {[row.asDict() for row in invalid_numeric_rows]}"
     )
 
@@ -357,10 +368,8 @@ normalized_df = parsed_df.withColumns({
         for column_name in INTEGER_COLUMNS
     },
     **{
-        # Mantém FLOAT por compatibilidade com a tabela histórica existente.
-        # Uma futura migração controlada poderá promover preços para DECIMAL(18,2).
-        column_name: F.col(f"__parsed_{column_name}").cast("float")
-        for column_name in FLOAT_COLUMNS
+        column_name: F.col(f"__parsed_{column_name}").cast("decimal(18,2)")
+        for column_name in DECIMAL_COLUMNS
     },
 }).drop(*parsed_columns.keys())
 
@@ -412,7 +421,7 @@ inventory_df = inventory_df.withColumns({
 TARGET_COLUMNS = [
     "centro", "material", "empresa",
     *INTEGER_COLUMNS,
-    *FLOAT_COLUMNS,
+    *DECIMAL_COLUMNS,
     "stock_total", "reference_date",
     "_ingested_at", "_ingested_by", "_load_id", "_source_file_path",
 ]
@@ -429,13 +438,24 @@ spark.sql(f"""
         estoque_em_poder_de_terceiros INT, estoque_em_controle_qualidade INT,
         estoque_devolucoes INT, saldo_da_carteira_de_pedidos INT,
         quantidade_em_pi INT, quantidade_em_bo INT,
-        preco_de_rede_price_de_venda_liquida FLOAT,
+        preco_de_rede_price_de_venda_liquida DECIMAL(18,2),
         stock_total INT,
         reference_date DATE,
         _ingested_at TIMESTAMP, _ingested_by STRING,
         _load_id STRING, _source_file_path STRING
     ) USING DELTA
 """)
+
+target_price_type = next(
+    field.dataType.simpleString()
+    for field in spark.table(INVENTORY_TABLE).schema.fields
+    if field.name == "preco_de_rede_price_de_venda_liquida"
+)
+if target_price_type != "decimal(18,2)":
+    raise RuntimeError(
+        f"A tabela {INVENTORY_TABLE} ainda utiliza {target_price_type} para o preço. "
+        "Execute primeiro migrations/001_migrate_inventory_price_float_to_decimal."
+    )
 
 # A substituição com replaceWhere é uma única transação Delta. O predicado
 # inclui somente empresa + centro presentes na carga, preservando os demais
@@ -521,7 +541,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "saldo_da_carteira_de_pedidos": "Saldo pendente na carteira de pedidos de clientes.",
     "quantidade_em_pi": "Quantidade em Pedidos de Importação (PI).",
     "quantidade_em_bo": "Quantidade em Back Order (BO) - pedidos pendentes.",
-    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede).",
+    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede), armazenado como DECIMAL(18,2).",
     "stock_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
     "reference_date": "Primeiro dia do mês de referência, extraído do nome do arquivo fonte.",
     "_ingested_at": "Data e hora da ingestão do snapshot.",
@@ -530,7 +550,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
 }
 
-METADATA_VERSION = "1"
+METADATA_VERSION = "2"
 table_properties = (
     spark.sql(f"DESCRIBE DETAIL {INVENTORY_TABLE}")
     .select("properties")
