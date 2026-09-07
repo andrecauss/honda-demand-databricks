@@ -1,11 +1,15 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # 2.2 — Snapshot de estoque de materiais
 # MAGIC
 # MAGIC - **Propósito:** Registrar mensalmente estoques, quantidades e preços dos materiais.
 # MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
 # MAGIC - **Saída:** `pr_cadastrao.material_inventory_history`
-# MAGIC - **Chave:** Empresa + Material + Centro + Data de referência · **Carga:** Mensal, substituição atômica do mês
+# MAGIC - **Chave:** Empresa + Material + Centro + Data de referência · **Carga:** Mensal, substituição atômica por centro
 
 # COMMAND ----------
 
@@ -156,7 +160,7 @@ print(f"DataFrame preparado: {len(df.columns)} colunas")
 # SNAPSHOT MENSAL DE INVENTÁRIO
 # ==============================================================================
 # Agregação: empresa + material + centro (duplicatas idênticas são consolidadas)
-# Operação: conversão de tipos, cálculo de stock_total e substituição atômica do mês
+# Operação: conversão de tipos, cálculo de stock_total e substituição atômica dos centros processados
 # Proteções: chaves obrigatórias, conflito por chave e validação numérica
 # Saída: parts_hdbk_sandbox.pr_cadastrao.material_inventory_history
 # Nota: reference_date extraída do padrão CAD{centro}_{yyyy}.{MM}.xlsx
@@ -200,7 +204,10 @@ INVENTORY_COLUMNS = [
     "preco_de_rede_price_de_venda_liquida",
 ]
 
-missing_inv = [c for c in INVENTORY_COLUMNS if c not in df.columns]
+MATERIAL_TYPE_COLUMN = "tipo_de_material"
+REQUIRED_SOURCE_COLUMNS = INVENTORY_COLUMNS + [MATERIAL_TYPE_COLUMN]
+
+missing_inv = [c for c in REQUIRED_SOURCE_COLUMNS if c not in df.columns]
 if missing_inv:
     raise ValueError(f"Colunas de inventário ausentes no DataFrame: {missing_inv}")
 
@@ -213,8 +220,14 @@ INTEGER_COLUMNS = [
 ]
 DECIMAL_COLUMNS = ["preco_de_rede_price_de_venda_liquida"]
 BUSINESS_KEY_COLUMNS = ["empresa", "material", "centro"]
+MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
 
-inventory_source_df = df.select(*INVENTORY_COLUMNS)
+inventory_source_df = (
+    df
+    .filter(F.col(MATERIAL_TYPE_COLUMN).isin(MATERIAL_TYPES))
+    .select(*INVENTORY_COLUMNS)
+)
+print(f"Filtro de tipo de material aplicado: {MATERIAL_TYPES}")
 
 # Chaves nulas ou vazias nunca devem entrar no histórico. Além de impedir uma
 # identificação confiável, valores nulos não se comportam como iguais em joins.
@@ -242,7 +255,7 @@ if invalid_key_rows:
 
 
 def normalize_decimal_string(column_name: str):
-    """Normaliza formatos numéricos usuais sem remover o separador decimal."""
+    """Normaliza números priorizando a convenção brasileira para milhares."""
     raw_value = F.regexp_replace(
         F.trim(F.col(column_name).cast("string")),
         r"[\s\u00A0R$]",
@@ -255,6 +268,12 @@ def normalize_decimal_string(column_name: str):
         .when(
             raw_value.rlike(r"^-?\d{1,3}(\.\d{3})+,\d+$"),
             F.regexp_replace(F.regexp_replace(raw_value, r"\.", ""), ",", "."),
+        )
+        # Formato brasileiro somente com milhar: 1.234 representa 1234.
+        # A regra vem antes do ponto decimal para eliminar essa ambiguidade.
+        .when(
+            raw_value.rlike(r"^-?\d{1,3}(\.\d{3})+$"),
+            F.regexp_replace(raw_value, r"\.", ""),
         )
         # Formato internacional com milhar e decimal: 1,234.56
         .when(
@@ -316,7 +335,18 @@ for column_name in INTEGER_COLUMNS:
 for column_name in DECIMAL_COLUMNS:
     original = F.trim(F.col(column_name).cast("string"))
     parsed = F.col(f"__parsed_{column_name}")
-    current_condition = original.isNotNull() & (original != "") & parsed.isNull()
+    target_decimal = F.expr(
+        f"try_cast(`__parsed_{column_name}` AS DECIMAL(18,2))"
+    )
+    current_condition = (
+        original.isNotNull()
+        & (original != "")
+        & (
+            parsed.isNull()
+            | target_decimal.isNull()
+            | (parsed != target_decimal.cast("decimal(38,6)"))
+        )
+    )
     invalid_numeric_condition = invalid_numeric_condition | current_condition
 
 invalid_numeric_rows = (
@@ -328,7 +358,7 @@ invalid_numeric_rows = (
 )
 if invalid_numeric_rows:
     raise ValueError(
-        "A carga contém quantidades ou preços em formato inválido. "
+        "A carga contém quantidades inválidas ou preços incompatíveis com DECIMAL(18,2). "
         f"Amostra: {[row.asDict() for row in invalid_numeric_rows]}"
     )
 
@@ -427,26 +457,56 @@ if target_price_type != "decimal(18,2)":
         "Execute primeiro migrations/001_migrate_inventory_price_float_to_decimal."
     )
 
-# A substituição com replaceWhere é uma única transação Delta: uma falha não
-# deixa o mês parcialmente gravado. A mesma operação também permite corrigir e
-# reprocessar um snapshot mensal sem duplicar registros.
+# A substituição com replaceWhere é uma única transação Delta. O predicado
+# inclui somente empresa + centro presentes na carga, preservando os demais
+# centros do mesmo mês quando o reprocessamento for parcial.
+def sql_string_literal(value: str) -> str:
+    """Escapa um valor de chave para uso seguro no predicado SQL."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 reference_date_sql = REFERENCE_DATE.strftime("%Y-%m-%d")
+processed_scopes = (
+    inventory_df
+    .select("empresa", "centro")
+    .distinct()
+    .orderBy("empresa", "centro")
+    .collect()
+)
+
+scope_predicate = " OR ".join(
+    "("
+    f"empresa = {sql_string_literal(row['empresa'])} "
+    f"AND centro = {sql_string_literal(row['centro'])}"
+    ")"
+    for row in processed_scopes
+)
+replace_predicate = (
+    f"reference_date = '{reference_date_sql}' "
+    f"AND ({scope_predicate})"
+)
+
 (
     inventory_df.write
     .format("delta")
     .mode("overwrite")
-    .option("replaceWhere", f"reference_date = '{reference_date_sql}'")
+    .option("replaceWhere", replace_predicate)
     .saveAsTable(INVENTORY_TABLE)
 )
 
 written_count = (
     spark.table(INVENTORY_TABLE)
-    .filter(F.col("reference_date") == F.lit(REFERENCE_DATE.date()))
+    .filter(F.expr(replace_predicate))
     .count()
 )
 
+processed_scope_labels = [
+    f"{row['empresa']}:{row['centro']}"
+    for row in processed_scopes
+]
 print(f"Tabela: {INVENTORY_TABLE}")
-print(f"Snapshot de {reference_date_sql} substituído atomicamente: {written_count} registros")
+print(f"Escopos substituídos em {reference_date_sql}: {processed_scope_labels}")
+print(f"Registros gravados nos escopos processados: {written_count}")
 
 # COMMAND ----------
 
@@ -462,7 +522,7 @@ print(f"Snapshot de {reference_date_sql} substituído atomicamente: {written_cou
 INVENTORY_COMMENT = """
 Snapshot mensal de estoques e preços de materiais SAP.
 
-Modelo: Snapshot mensal substituível por data de referência
+Modelo: Snapshot mensal substituível por data de referência, empresa e centro
 Chave: empresa + material + centro + reference_date
 Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
 """
@@ -481,7 +541,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "saldo_da_carteira_de_pedidos": "Saldo pendente na carteira de pedidos de clientes.",
     "quantidade_em_pi": "Quantidade em Pedidos de Importação (PI).",
     "quantidade_em_bo": "Quantidade em Back Order (BO) - pedidos pendentes.",
-    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede), armazenado com precisão decimal de duas casas.",
+    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede), armazenado como DECIMAL(18,2).",
     "stock_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
     "reference_date": "Primeiro dia do mês de referência, extraído do nome do arquivo fonte.",
     "_ingested_at": "Data e hora da ingestão do snapshot.",
