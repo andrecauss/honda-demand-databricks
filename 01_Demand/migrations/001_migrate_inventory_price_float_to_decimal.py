@@ -1,8 +1,12 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Migração 001 — Preço de estoque para DECIMAL(18,2)
 # MAGIC
-# MAGIC - **Propósito:** Converter o preço histórico de `FLOAT` para `DECIMAL(18,2)` com validação e restauração automática em caso de falha.
+# MAGIC - **Propósito:** Converter o preço histórico de `FLOAT` para `DECIMAL(18,2)` com validação, staging por `SHALLOW CLONE` e restauração automática.
 # MAGIC - **Entrada/Saída:** `pr_cadastrao.material_inventory_history`
 # MAGIC - **Impacto:** Reescrita única da tabela Delta · **Execução:** Uma vez, antes da nova versão do notebook 2.2
 
@@ -11,6 +15,7 @@
 # DBTITLE 1,Configuração e validação do schema atual
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType, DoubleType, FloatType
+import uuid
 
 TABLE_NAME = "parts_hdbk_sandbox.pr_cadastrao.material_inventory_history"
 PRICE_COLUMN = "preco_de_rede_price_de_venda_liquida"
@@ -99,12 +104,24 @@ source_version = (
     .first()["version"]
 )
 
-migrated_df = source_df.withColumn(
-    PRICE_COLUMN,
-    F.bround(F.col(PRICE_COLUMN).cast("decimal(38,6)"), 2).cast(TARGET_TYPE),
+table_parts = TABLE_NAME.split(".")
+staging_table = (
+    f"{table_parts[0]}.{table_parts[1]}."
+    f"__migration_001_inventory_price_{uuid.uuid4().hex}"
 )
+staging_created = False
 
 try:
+    # O clone raso materializa uma origem independente sem duplicar fisicamente
+    # todos os arquivos Delta e evita ler e sobrescrever a mesma tabela.
+    spark.sql(f"CREATE TABLE {staging_table} SHALLOW CLONE {TABLE_NAME}")
+    staging_created = True
+
+    migrated_df = spark.table(staging_table).withColumn(
+        PRICE_COLUMN,
+        F.bround(F.col(PRICE_COLUMN).cast("decimal(38,6)"), 2).cast(TARGET_TYPE),
+    )
+
     (
         migrated_df.write
         .format("delta")
@@ -130,18 +147,34 @@ try:
             f"depois={migrated_count}."
         )
 except Exception as migration_error:
-    current_version = (
-        spark.sql(f"DESCRIBE HISTORY {TABLE_NAME}")
-        .select("version")
-        .orderBy(F.desc("version"))
-        .first()["version"]
-    )
-    if current_version > source_version:
-        print(f"Falha detectada. Restaurando {TABLE_NAME} para a versão {source_version}.")
-        spark.sql(f"RESTORE TABLE {TABLE_NAME} TO VERSION AS OF {source_version}")
-    else:
-        print("A falha ocorreu antes de qualquer commit; nenhuma restauração foi necessária.")
-    raise RuntimeError("Migração revertida automaticamente.") from migration_error
+    restore_error = None
+    try:
+        current_version = (
+            spark.sql(f"DESCRIBE HISTORY {TABLE_NAME}")
+            .select("version")
+            .orderBy(F.desc("version"))
+            .first()["version"]
+        )
+        if current_version > source_version:
+            print(f"Falha detectada. Restaurando {TABLE_NAME} para a versão {source_version}.")
+            spark.sql(f"RESTORE TABLE {TABLE_NAME} TO VERSION AS OF {source_version}")
+        else:
+            print("A falha ocorreu antes de qualquer commit; nenhuma restauração foi necessária.")
+    except Exception as caught_restore_error:
+        restore_error = caught_restore_error
+
+    if restore_error is not None:
+        raise RuntimeError(
+            f"A migração falhou e a restauração automática também falhou. "
+            f"A tabela temporária foi preservada em {staging_table}."
+        ) from restore_error
+
+    if staging_created:
+        spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
+    raise RuntimeError("Migração falhou; a tabela original foi preservada ou restaurada.") from migration_error
+
+if staging_created:
+    spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
 
 print(
     f"Migração concluída: {TABLE_NAME}.{PRICE_COLUMN} agora utiliza "
