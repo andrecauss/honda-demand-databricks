@@ -5,7 +5,7 @@
 # MAGIC - **Propósito:** Manter o histórico das alterações do cadastro mestre de materiais.
 # MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
 # MAGIC - **Saídas:** `pr_cadastrao.material_spec_changes` e `_agents_databases.material_spec_changes`
-# MAGIC - **Chave:** Empresa + Material + Centro · **Carga:** Mensal, SCD Type 2
+# MAGIC - **Chave:** Empresa + Material · **Carga:** Mensal, SCD Type 2
 
 # COMMAND ----------
 
@@ -172,7 +172,8 @@ print(f"Primeiras colunas: {df.columns[:10]}")
 #   Chave de negócio:
 #     • empresa — chave de negócio
 #     • material — chave de negócio
-#     • centro — chave de negócio
+#   Campo usado somente na validação da origem:
+#     • centro — confirma que os campos técnicos são consistentes entre centros
 #   Campos rastreados por mudança (hash SHA-256):
 #     • intercambiabilidade
 #     • item_principal_cadeia
@@ -208,7 +209,7 @@ print("✓ Escopo de campos SCD2 documentado.")
 # Seleciona colunas de negócio, calcula hash SHA-256 dos campos rastreados,
 # adiciona colunas técnicas (start_date, end_date, is_current, auditoria)
 # e valida ausência de versões conflitantes por chave na mesma carga.
-# O resultado é persistido como temp view "vw_material_historical_stage".
+# O resultado é persistido como temp view "vw_material_spec_changes_stage".
 # ==============================================================================
 
 from pyspark.sql import functions as F
@@ -218,7 +219,9 @@ SOURCE_PATH = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/cu
 MAIN_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_spec_changes"
 AGENTS_TABLE = "parts_hdbk_sandbox._agents_databases.material_spec_changes"
 
-BUSINESS_KEY_COLUMNS = ["empresa", "material", "centro"]
+BUSINESS_KEY_COLUMNS = ["empresa", "material"]
+SOURCE_CONTEXT_COLUMNS = ["centro"]
+MATERIAL_TYPE_COLUMN = "tipo_de_material"
 TRACKED_COLUMNS = [
     "intercambiabilidade",
     "item_principal_cadeia",
@@ -230,6 +233,12 @@ TRACKED_COLUMNS = [
     "status_compra",
 ]
 INCLUDED_SOURCE_COLUMNS = BUSINESS_KEY_COLUMNS + TRACKED_COLUMNS
+REQUIRED_SOURCE_COLUMNS = (
+    BUSINESS_KEY_COLUMNS
+    + SOURCE_CONTEXT_COLUMNS
+    + [MATERIAL_TYPE_COLUMN]
+    + TRACKED_COLUMNS
+)
 TECHNICAL_COLUMNS = [
     "row_hash",
     "start_date",
@@ -244,7 +253,7 @@ TECHNICAL_COLUMNS = [
 ]
 TARGET_COLUMNS = INCLUDED_SOURCE_COLUMNS + TECHNICAL_COLUMNS
 
-missing_columns = [column for column in INCLUDED_SOURCE_COLUMNS if column not in df.columns]
+missing_columns = [column for column in REQUIRED_SOURCE_COLUMNS if column not in df.columns]
 if missing_columns:
     raise ValueError(f"Colunas obrigatórias ausentes no DataFrame sanitizado: {missing_columns}")
 
@@ -289,25 +298,61 @@ print(f"start_date efetivo: {'1900-01-01 (sentinel)' if is_initial_load else REF
 
 # --- Filtro por tipo de material (apenas ZHAW, ZFER, ZRO1) ---
 MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
-df_filtered = df.filter(F.col("tipo_de_material").isin(MATERIAL_TYPES))
-print(f"Registros após filtro tipo_de_material {MATERIAL_TYPES}: {df_filtered.count()}")
+df_filtered = df.filter(F.col(MATERIAL_TYPE_COLUMN).isin(MATERIAL_TYPES))
+print(f"Registros após filtro {MATERIAL_TYPE_COLUMN} {MATERIAL_TYPES}: {df_filtered.count()}")
 
-source_df = df_filtered.select(*INCLUDED_SOURCE_COLUMNS).dropDuplicates()
+# Centro não compõe a chave do histórico. Antes de consolidar uma linha por
+# empresa + material, a carga deve provar que os campos técnicos são iguais
+# em todos os centros presentes no snapshot.
+normalized_source_df = df_filtered.select(
+    *[
+        F.trim(F.col(column).cast("string")).alias(column)
+        for column in REQUIRED_SOURCE_COLUMNS
+    ]
+)
 
 hash_expression = F.sha2(
     F.concat_ws(
         "||",
         *[
-            F.coalesce(F.trim(F.col(column).cast("string")), F.lit("<NULL>"))
+            F.coalesce(F.col(column), F.lit("<NULL>"))
             for column in TRACKED_COLUMNS
         ],
     ),
     256,
 )
 
+source_with_hash_df = normalized_source_df.withColumn("row_hash", hash_expression)
+
+inconsistent_materials_df = (
+    source_with_hash_df
+    .groupBy(*BUSINESS_KEY_COLUMNS)
+    .agg(
+        F.countDistinct("row_hash").alias("technical_versions"),
+        F.sort_array(F.collect_set("centro")).alias("centros"),
+    )
+    .filter(F.col("technical_versions") > 1)
+)
+
+if inconsistent_materials_df.limit(1).count() > 0:
+    display(
+        inconsistent_materials_df
+        .orderBy(F.desc("technical_versions"), *BUSINESS_KEY_COLUMNS)
+        .limit(20)
+    )
+    raise ValueError(
+        "Há campos técnicos divergentes entre centros para a mesma empresa + material. "
+        "Revise o snapshot antes de prosseguir."
+    )
+
+source_df = (
+    source_with_hash_df
+    .dropDuplicates(BUSINESS_KEY_COLUMNS + ["row_hash"])
+    .select(*INCLUDED_SOURCE_COLUMNS, "row_hash")
+)
+
 stage_df = (
     source_df
-    .withColumn("row_hash", hash_expression)
     .withColumn("start_date", effective_start)
     .withColumn("end_date", F.lit(None).cast("timestamp"))
     .withColumn("is_current", F.lit(True))
@@ -321,20 +366,7 @@ stage_df = (
     .select(*TARGET_COLUMNS)
 )
 
-conflicting_versions_df = (
-    stage_df.groupBy(*BUSINESS_KEY_COLUMNS)
-    .agg(F.countDistinct("row_hash").alias("hash_versions"))
-    .filter(F.col("hash_versions") > 1)
-)
-
-if conflicting_versions_df.limit(1).count() > 0:
-    display(conflicting_versions_df.orderBy(F.desc("hash_versions")).limit(20))
-    raise ValueError(
-        "A carga contém múltiplas versões SCD2 para a mesma chave de negócio na mesma execução. "
-        "Revise o arquivo de origem antes de prosseguir."
-    )
-
-stage_df.createOrReplaceTempView("vw_material_historical_stage")
+stage_df.createOrReplaceTempView("vw_material_spec_changes_stage")
 
 print(f"Colunas de negócio incluídas: {INCLUDED_SOURCE_COLUMNS}")
 print(f"Colunas avaliadas por hash: {TRACKED_COLUMNS}")
@@ -354,7 +386,7 @@ display(stage_df.orderBy(*BUSINESS_KEY_COLUMNS).limit(5))
 #   2. MERGE: encerra registros com hash alterado (end_date + is_current=false)
 #   3. UPDATE: encerra registros ausentes no novo snapshot (exclusão lógica)
 #   4. INSERT: insere registros novos ou com hash diferente
-# Saída: parts_hdbk_sandbox.pr_cadastrao.material_historical
+# Saída: parts_hdbk_sandbox.pr_cadastrao.material_spec_changes
 # ==============================================================================
 
 
@@ -372,7 +404,6 @@ def ensure_scd2_table(target_table: str) -> None:
         CREATE TABLE IF NOT EXISTS {target_table} (
             empresa STRING,
             material STRING,
-            centro STRING,
             intercambiabilidade STRING,
             item_principal_cadeia STRING,
             data_cadeia STRING,
@@ -417,10 +448,9 @@ def apply_scd2_merge(target_table: str) -> None:
     changed_candidates = spark.sql(f"""
         SELECT COUNT(*) AS total
         FROM {target_table} target
-        INNER JOIN vw_material_historical_stage source
+        INNER JOIN vw_material_spec_changes_stage source
             ON target.empresa = source.empresa
            AND target.material = source.material
-           AND target.centro = source.centro
            AND target.is_current = TRUE
         WHERE target.row_hash <> source.row_hash
     """).first()["total"]
@@ -428,30 +458,27 @@ def apply_scd2_merge(target_table: str) -> None:
     missing_candidates = spark.sql(f"""
         SELECT COUNT(*) AS total
         FROM {target_table} target
-        LEFT ANTI JOIN vw_material_historical_stage source
+        LEFT ANTI JOIN vw_material_spec_changes_stage source
             ON target.empresa = source.empresa
            AND target.material = source.material
-           AND target.centro = source.centro
         WHERE target.is_current = TRUE
     """).first()["total"]
 
     insert_candidates = spark.sql(f"""
         SELECT COUNT(*) AS total
-        FROM vw_material_historical_stage source
+        FROM vw_material_spec_changes_stage source
         LEFT ANTI JOIN {target_table} target
             ON target.empresa = source.empresa
            AND target.material = source.material
-           AND target.centro = source.centro
            AND target.is_current = TRUE
            AND target.row_hash = source.row_hash
     """).first()["total"]
 
     spark.sql(f"""
         MERGE INTO {target_table} AS target
-        USING vw_material_historical_stage AS source
+        USING vw_material_spec_changes_stage AS source
             ON target.empresa = source.empresa
            AND target.material = source.material
-           AND target.centro = source.centro
            AND target.is_current = TRUE
         WHEN MATCHED AND target.row_hash <> source.row_hash THEN
           UPDATE SET
@@ -477,21 +504,19 @@ def apply_scd2_merge(target_table: str) -> None:
         WHERE target.is_current = TRUE
           AND NOT EXISTS (
               SELECT 1
-              FROM vw_material_historical_stage source
+              FROM vw_material_spec_changes_stage source
               WHERE target.empresa = source.empresa
                 AND target.material = source.material
-                AND target.centro = source.centro
           )
     """)
 
     spark.sql(f"""
         INSERT INTO {target_table}
         SELECT source.*
-        FROM vw_material_historical_stage source
+        FROM vw_material_spec_changes_stage source
         LEFT ANTI JOIN {target_table} target
             ON target.empresa = source.empresa
            AND target.material = source.material
-           AND target.centro = source.centro
            AND target.is_current = TRUE
            AND target.row_hash = source.row_hash
     """)
@@ -543,24 +568,22 @@ print(f"Carga SCD2 concluída na réplica adicional: {AGENTS_TABLE}")
 # MAGIC   SELECT
 # MAGIC     empresa,
 # MAGIC     material,
-# MAGIC     centro,
 # MAGIC     COUNT(*) AS total_versions,
 # MAGIC     SUM(CASE WHEN is_current THEN 1 ELSE 0 END) AS current_versions,
 # MAGIC     MIN(start_date) AS first_start_date,
 # MAGIC     MAX(COALESCE(end_date, start_date)) AS last_change_date
 # MAGIC   FROM parts_hdbk_sandbox.pr_cadastrao.material_spec_changes
-# MAGIC   GROUP BY empresa, material, centro
+# MAGIC   GROUP BY empresa, material
 # MAGIC )
 # MAGIC SELECT
 # MAGIC   empresa,
 # MAGIC   material,
-# MAGIC   centro,
 # MAGIC   total_versions,
 # MAGIC   current_versions,
 # MAGIC   first_start_date,
 # MAGIC   last_change_date
 # MAGIC FROM versions
-# MAGIC ORDER BY total_versions DESC, empresa, material, centro
+# MAGIC ORDER BY total_versions DESC, empresa, material
 # MAGIC LIMIT 5
 
 # COMMAND ----------
@@ -580,8 +603,6 @@ COLUMN_COMMENTS = {
     # --- Chave de negócio ---
     "empresa": "Código da empresa SAP (ex: 0200=2W, 0500=4W). Parte da chave de negócio histórica.",
     "material": "Código único do material/peça (partnumber SAP). Parte da chave de negócio histórica.",
-    "centro": "Código do centro/depósito SAP que atende o material. Parte da chave de negócio histórica.",
-
     # --- Campos rastreados por mudança ---
     "intercambiabilidade": "Indica se o material possui intercambiabilidade com outros. Campo rastreado por SCD2.",
     "item_principal_cadeia": "Material principal na cadeia de substituição. Campo rastreado por SCD2.",
@@ -614,7 +635,7 @@ TABLE_COMMENT = """
 Camada Refined do histórico de cadastro de materiais SAP.
 
 Modelo: Slowly Changing Dimension Type 2 (SCD2)
-Chave de negócio: empresa + material + centro
+Chave de negócio: empresa + material
 Detecção de mudança: Hash Comparison (SHA-256)
 Campos rastreados: intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra
 Atualização: append histórico quando houver mudança nos campos rastreados ou quando a chave aparecer pela primeira vez; encerramento lógico do registro vigente quando a chave deixar de aparecer no novo snapshot
@@ -642,7 +663,6 @@ for target_table in TARGET_TABLES:
 
     spark.sql(f"ALTER TABLE {target_table} ALTER COLUMN empresa SET TAGS ('business_key' = 'true')")
     spark.sql(f"ALTER TABLE {target_table} ALTER COLUMN material SET TAGS ('business_key' = 'true')")
-    spark.sql(f"ALTER TABLE {target_table} ALTER COLUMN centro SET TAGS ('business_key' = 'true')")
 
     for tracked_column in TRACKED_COLUMNS:
         spark.sql(f"ALTER TABLE {target_table} ALTER COLUMN {tracked_column} SET TAGS ('tracked_change' = 'true')")
@@ -659,7 +679,7 @@ for target_table in TARGET_TABLES:
             'data_domain' = 'Materials Master Data',
             'source_system' = 'SAP',
             'refresh_frequency' = 'monthly_scd2',
-            'natural_key' = 'empresa, material, centro',
+            'natural_key' = 'empresa, material',
             'tracked_columns' = 'intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra'
         )
     """)
@@ -667,51 +687,3 @@ for target_table in TARGET_TABLES:
     print(f"Metadados aplicados à tabela {target_table}")
 
 print(f"\nMetadados completos aplicados \u00e0s tabelas SCD2: {TARGET_TABLES}")
-
-# COMMAND ----------
-
-# DBTITLE 1,Mover arquivos processados para history/
-# ==============================================================================
-# MOVER ARQUIVOS PROCESSADOS PARA HISTORY/
-# ==============================================================================
-# Move os arquivos Excel processados de current/ para history/ após o
-# sucesso do SCD2. Valida que current/ ficou vazio ao final.
-# Em caso de falha na movimentação, levanta RuntimeError para evitar
-# reprocessamento na próxima execução.
-# ==============================================================================
-
-HISTORY_PATH = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/history/"
-
-moved = []
-failed = []
-
-for fname in source_file_names:
-    source = f"{SOURCE_PATH}{fname}"
-    destination = f"{HISTORY_PATH}{fname}"
-    try:
-        dbutils.fs.mv(source, destination)
-        moved.append(fname)
-        print(f"Movido: {fname} \u2192 history/")
-    except Exception as e:
-        failed.append((fname, str(e)))
-        print(f"ERRO ao mover {fname}: {e}")
-
-print(f"\nResumo: {len(moved)} arquivo(s) movido(s), {len(failed)} erro(s)")
-
-if failed:
-    raise RuntimeError(
-        f"Falha ao mover {len(failed)} arquivo(s): "
-        + ", ".join(f"{name}: {err}" for name, err in failed)
-    )
-
-# Verificar se current/ ficou vazio
-try:
-    remaining = dbutils.fs.ls(SOURCE_PATH)
-    if remaining:
-        print(f"ATEN\u00c7\u00c3O: {len(remaining)} arquivo(s) remanescente(s) em current/")
-        for f in remaining:
-            print(f"  - {f.name}")
-    else:
-        print(f"Diret\u00f3rio current/ vazio ap\u00f3s movimenta\u00e7\u00e3o.")
-except Exception:
-    print(f"Diret\u00f3rio current/ vazio ap\u00f3s movimenta\u00e7\u00e3o.")
