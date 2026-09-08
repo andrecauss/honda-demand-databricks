@@ -211,14 +211,13 @@ missing_inv = [c for c in REQUIRED_SOURCE_COLUMNS if c not in df.columns]
 if missing_inv:
     raise ValueError(f"Colunas de inventário ausentes no DataFrame: {missing_inv}")
 
-INTEGER_COLUMNS = [
+# Todas as colunas numéricas são DECIMAL(18,2) para preservar frações
+DECIMAL_COLUMNS = [
     "estoque_livre_no_centro", "estoque_disponivel_para_venda",
     "estoque_bloqueado", "estoque_em_transito",
     "estoque_em_poder_de_terceiros", "estoque_em_controle_qualidade",
     "estoque_devolucoes",
     "quantidade_em_pi", "quantidade_em_bo",
-]
-DECIMAL_COLUMNS = [
     "saldo_da_carteira_de_pedidos",
     "preco_de_rede_price_de_venda_liquida",
 ]
@@ -267,6 +266,11 @@ def normalize_decimal_string(column_name: str):
 
     return (
         F.when(raw_value.isNull() | (raw_value == ""), F.lit(None).cast("string"))
+        # Notação científica: 1.23E-4 ou 1.23E+4
+        .when(
+            raw_value.rlike(r"^-?\d+(\.\d+)?[Ee][+-]?\d+$"),
+            raw_value,
+        )
         # Formato brasileiro com milhar e decimal: 1.234,56
         .when(
             raw_value.rlike(r"^-?\d{1,3}(\.\d{3})+,\d+$"),
@@ -291,50 +295,15 @@ def normalize_decimal_string(column_name: str):
     )
 
 
-def normalize_integer_string(column_name: str):
-    """Normaliza quantidades inteiras, inclusive com separador de milhar."""
-    raw_value = F.regexp_replace(
-        F.trim(F.col(column_name).cast("string")),
-        r"[\s\u00A0]",
-        "",
-    )
-
-    return F.when(
-        raw_value.rlike(r"^-?\d{1,3}([.,]\d{3})+$"),
-        F.regexp_replace(raw_value, r"[.,]", ""),
-    ).otherwise(normalize_decimal_string(column_name))
-
-
 parsed_columns = {
-    **{
-        f"__parsed_{column_name}": normalize_integer_string(column_name).cast("decimal(38,6)")
-        for column_name in INTEGER_COLUMNS
-    },
-    **{
-        f"__parsed_{column_name}": normalize_decimal_string(column_name).cast("decimal(38,6)")
-        for column_name in DECIMAL_COLUMNS
-    },
+    f"__parsed_{column_name}": normalize_decimal_string(column_name).cast("decimal(38,6)")
+    for column_name in DECIMAL_COLUMNS
 }
 parsed_df = inventory_source_df.withColumns(parsed_columns)
 
 # Falha explicitamente em vez de transformar silenciosamente conteúdo inválido
-# em NULL ou truncar quantidades fracionárias/fora do intervalo de INT.
+# em NULL. Valores fracionários são preservados como DECIMAL(18,2).
 invalid_numeric_condition = None
-for column_name in INTEGER_COLUMNS:
-    original = F.trim(F.col(column_name).cast("string"))
-    parsed = F.col(f"__parsed_{column_name}")
-    current_condition = (
-        (original.isNotNull() & (original != "") & parsed.isNull())
-        | (parsed.isNotNull() & (parsed != F.floor(parsed)))
-        | (parsed < F.lit(-2147483648))
-        | (parsed > F.lit(2147483647))
-    )
-    invalid_numeric_condition = (
-        current_condition
-        if invalid_numeric_condition is None
-        else invalid_numeric_condition | current_condition
-    )
-
 for column_name in DECIMAL_COLUMNS:
     original = F.trim(F.col(column_name).cast("string"))
     parsed = F.col(f"__parsed_{column_name}")
@@ -347,7 +316,6 @@ for column_name in DECIMAL_COLUMNS:
         & (
             parsed.isNull()
             | target_decimal.isNull()
-            | (parsed != target_decimal.cast("decimal(38,6)"))
         )
     )
     invalid_numeric_condition = invalid_numeric_condition | current_condition
@@ -355,7 +323,7 @@ for column_name in DECIMAL_COLUMNS:
 invalid_numeric_rows = (
     parsed_df
     .filter(invalid_numeric_condition)
-    .select(*BUSINESS_KEY_COLUMNS, *INTEGER_COLUMNS, *DECIMAL_COLUMNS)
+    .select(*BUSINESS_KEY_COLUMNS, *DECIMAL_COLUMNS)
     .limit(10)
     .collect()
 )
@@ -366,14 +334,8 @@ if invalid_numeric_rows:
     )
 
 normalized_df = parsed_df.withColumns({
-    **{
-        column_name: F.col(f"__parsed_{column_name}").cast("int")
-        for column_name in INTEGER_COLUMNS
-    },
-    **{
-        column_name: F.col(f"__parsed_{column_name}").cast("decimal(18,2)")
-        for column_name in DECIMAL_COLUMNS
-    },
+    column_name: F.round(F.col(f"__parsed_{column_name}"), 2).cast("decimal(18,2)")
+    for column_name in DECIMAL_COLUMNS
 }).drop(*parsed_columns.keys())
 
 # Duplicatas idênticas são aceitáveis; duas versões diferentes para a mesma
@@ -413,7 +375,7 @@ STOCK_TOTAL_COLUMNS = [
 ]
 
 inventory_df = inventory_df.withColumns({
-    "stock_total": sum(F.coalesce(F.col(c), F.lit(0)) for c in STOCK_TOTAL_COLUMNS),
+    "stock_total": sum(F.coalesce(F.col(c), F.lit(0).cast("decimal(18,2)")) for c in STOCK_TOTAL_COLUMNS).cast("decimal(18,2)"),
     "reference_date": F.lit(REFERENCE_DATE).cast("date"),
     "_ingested_at": F.lit(LOAD_TS),
     "_ingested_by": F.lit(CURRENT_USER),
@@ -423,7 +385,6 @@ inventory_df = inventory_df.withColumns({
 
 TARGET_COLUMNS = [
     "centro", "material", "empresa",
-    *INTEGER_COLUMNS,
     *DECIMAL_COLUMNS,
     "stock_total", "reference_date",
     "_ingested_at", "_ingested_by", "_load_id", "_source_file_path",
@@ -436,13 +397,13 @@ if not inventory_df.limit(1).collect():
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {INVENTORY_TABLE} (
         centro STRING, material STRING, empresa STRING,
-        estoque_livre_no_centro INT, estoque_disponivel_para_venda INT,
-        estoque_bloqueado INT, estoque_em_transito INT,
-        estoque_em_poder_de_terceiros INT, estoque_em_controle_qualidade INT,
-        estoque_devolucoes INT, saldo_da_carteira_de_pedidos DECIMAL(18,2),
-        quantidade_em_pi INT, quantidade_em_bo INT,
+        estoque_livre_no_centro DECIMAL(18,2), estoque_disponivel_para_venda DECIMAL(18,2),
+        estoque_bloqueado DECIMAL(18,2), estoque_em_transito DECIMAL(18,2),
+        estoque_em_poder_de_terceiros DECIMAL(18,2), estoque_em_controle_qualidade DECIMAL(18,2),
+        estoque_devolucoes DECIMAL(18,2), saldo_da_carteira_de_pedidos DECIMAL(18,2),
+        quantidade_em_pi DECIMAL(18,2), quantidade_em_bo DECIMAL(18,2),
         preco_de_rede_price_de_venda_liquida DECIMAL(18,2),
-        stock_total INT,
+        stock_total DECIMAL(18,2),
         reference_date DATE,
         _ingested_at TIMESTAMP, _ingested_by STRING,
         _load_id STRING, _source_file_path STRING
@@ -544,7 +505,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "saldo_da_carteira_de_pedidos": "Saldo pendente na carteira de pedidos de clientes.",
     "quantidade_em_pi": "Quantidade em Pedidos de Importação (PI).",
     "quantidade_em_bo": "Quantidade em Back Order (BO) - pedidos pendentes.",
-    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede), armazenado como DECIMAL(18,2).",
+    "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede).",
     "stock_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
     "reference_date": "Primeiro dia do mês de referência, extraído do nome do arquivo fonte.",
     "_ingested_at": "Data e hora da ingestão do snapshot.",
@@ -553,7 +514,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
 }
 
-METADATA_VERSION = "2"
+METADATA_VERSION = "4"
 table_properties = (
     spark.sql(f"DESCRIBE DETAIL {INVENTORY_TABLE}")
     .select("properties")
