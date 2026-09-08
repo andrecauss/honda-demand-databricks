@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # 2.3 — Histórico de materiais (SCD2)
 # MAGIC
@@ -548,6 +552,12 @@ print(f"Carga SCD2 concluída na tabela principal: {MAIN_TABLE}")
 # Aplica o mesmo processo SCD2 na réplica usada por agentes de IA,
 # garantindo consistência entre as duas tabelas de destino.
 # ------------------------------------------------------------------------------
+
+# Criar schema se não existir
+spark.sql("""
+    CREATE SCHEMA IF NOT EXISTS parts_hdbk_sandbox._agents_databases
+    COMMENT 'Schema para réplicas de tabelas acessadas por agentes de IA'
+""")
 
 apply_scd2_merge(AGENTS_TABLE)
 print(f"Carga SCD2 concluída na réplica adicional: {AGENTS_TABLE}")
