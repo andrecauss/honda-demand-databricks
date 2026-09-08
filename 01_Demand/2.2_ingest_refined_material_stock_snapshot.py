@@ -215,10 +215,13 @@ INTEGER_COLUMNS = [
     "estoque_livre_no_centro", "estoque_disponivel_para_venda",
     "estoque_bloqueado", "estoque_em_transito",
     "estoque_em_poder_de_terceiros", "estoque_em_controle_qualidade",
-    "estoque_devolucoes", "saldo_da_carteira_de_pedidos",
+    "estoque_devolucoes",
     "quantidade_em_pi", "quantidade_em_bo",
 ]
-DECIMAL_COLUMNS = ["preco_de_rede_price_de_venda_liquida"]
+DECIMAL_COLUMNS = [
+    "saldo_da_carteira_de_pedidos",
+    "preco_de_rede_price_de_venda_liquida",
+]
 BUSINESS_KEY_COLUMNS = ["empresa", "material", "centro"]
 MATERIAL_TYPES = ["ZHAW", "ZFER", "ZRO1"]
 
@@ -436,7 +439,7 @@ spark.sql(f"""
         estoque_livre_no_centro INT, estoque_disponivel_para_venda INT,
         estoque_bloqueado INT, estoque_em_transito INT,
         estoque_em_poder_de_terceiros INT, estoque_em_controle_qualidade INT,
-        estoque_devolucoes INT, saldo_da_carteira_de_pedidos INT,
+        estoque_devolucoes INT, saldo_da_carteira_de_pedidos DECIMAL(18,2),
         quantidade_em_pi INT, quantidade_em_bo INT,
         preco_de_rede_price_de_venda_liquida DECIMAL(18,2),
         stock_total INT,
