@@ -261,6 +261,158 @@ display(
 
 # COMMAND ----------
 
+# DBTITLE 1,Metadados das tabelas de forecast
+# ==============================================================================
+# METADADOS DAS TABELAS DE FORECAST
+# ==============================================================================
+# Aplica comentários de tabela e colunas, tags de governança e
+# propriedades de negócio nas tabelas raw_forecast_enriched e
+# refined_forecast_enriched. Garante rastreabilidade e documentação
+# no Unity Catalog.
+# ==============================================================================
+
+# ---------------------------------------------------------------------------
+# 1) raw_forecast_enriched
+# ---------------------------------------------------------------------------
+RAW_TABLE = SOURCE_TABLE
+RAW_COMMENT = """
+Forecast enriched bruto ingerido dos arquivos Excel SAP.
+
+Modelo: Append incremental por _load_id
+Chave: forecast_cycle + segment + main_material (36 colunas de horizonte n+0..n+35)
+Fonte: /Volumes/parts_hdbk_sandbox/pr_forecast/forecast_enriched/current/
+"""
+
+RAW_COLUMN_COMMENTS = {
+    "forecast_cycle": "Primeiro dia do mês do ciclo de forecast (date).",
+    "department": "Departamento de origem (ex: Domestic - Parts, Export - Parts).",
+    "forecast_type": "Tipo de forecast (ex: Enrich, Judgment, Consensus).",
+    "segment": "Código da empresa SAP (ex: 0200=2W, 0500=4W).",
+    "market": "Mercado de destino (ex: Domestic, Export).",
+    "main_material": "Código do material/peça (partnumber SAP).",
+    "forecast_classification": "Classificação do forecast (ex: Supply - Parts).",
+    "_source_file_name": "Nome do arquivo Excel fonte.",
+    "_source_file_path": "Caminho completo do arquivo fonte no Volume.",
+    "_ingested_at": "Data e hora da ingestão do registro.",
+    "_ingested_by": "Usuário responsável pela execução da carga.",
+    "_load_type": "Tipo de carga (incremental).",
+    "_load_id": "Identificador único da execução da carga (UUID).",
+}
+# Colunas de horizonte n+0..n+35
+for i in range(36):
+    RAW_COLUMN_COMMENTS[f"n+{i}"] = f"Quantidade prevista para o mês forecast_cycle + {i} meses."
+
+RAW_METADATA_VERSION = "1"
+
+raw_props = (
+    spark.sql(f"DESCRIBE DETAIL {RAW_TABLE}")
+    .select("properties").first()["properties"] or {}
+)
+
+if raw_props.get("forecast_raw_metadata_version") != RAW_METADATA_VERSION:
+    spark.sql(
+        f"COMMENT ON TABLE {RAW_TABLE} IS "
+        f"'{RAW_COMMENT.replace(chr(39), chr(39)+chr(39))}'"
+    )
+    for col_name, comment in RAW_COLUMN_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        spark.sql(f"COMMENT ON COLUMN {RAW_TABLE}.`{col_name}` IS '{escaped}'")
+
+    spark.sql(f"""
+        ALTER TABLE {RAW_TABLE} SET TAGS (
+            'domain' = 'forecast', 'layer' = 'raw',
+            'source' = 'sap', 'history_model' = 'append_incremental',
+            'data_classification' = 'internal'
+        )
+    """)
+    spark.sql(f"""
+        ALTER TABLE {RAW_TABLE} SET TBLPROPERTIES (
+            'business_owner' = 'Demand Planning',
+            'technical_owner' = 'Andre Causs',
+            'data_domain' = 'Forecast',
+            'source_system' = 'SAP',
+            'refresh_frequency' = 'incremental_append',
+            'natural_key' = 'forecast_cycle, segment, main_material',
+            'forecast_raw_metadata_version' = '{RAW_METADATA_VERSION}'
+        )
+    """)
+    print(f"Metadados versão {RAW_METADATA_VERSION} aplicados à tabela {RAW_TABLE}")
+else:
+    print(f"Metadados versão {RAW_METADATA_VERSION} já aplicados em {RAW_TABLE}; DDL ignorada.")
+
+# ---------------------------------------------------------------------------
+# 2) refined_forecast_enriched
+# ---------------------------------------------------------------------------
+REFINED_TABLE = TARGET_TABLE
+REFINED_COMMENT = """
+Forecast enriched dinamizado (unpivot) com horizonte limitado a 12 meses e lookup de cadeia de materiais.
+
+Modelo: Append incremental por _load_id
+Chave: forecast_cycle + segment + material + lag
+Fonte: raw_forecast_enriched (transformado)
+Lookup: pr_cadastrao.material_cadeia (material → main_material via item_principal_cadeia)
+"""
+
+REFINED_COLUMN_COMMENTS = {
+    "forecast_cycle": "Primeiro dia do mês do ciclo de forecast (date).",
+    "department": "Departamento de origem, sem prefixo Domestic/Export.",
+    "forecast_type": "Tipo de forecast (ex: Enrich, Judgment, Consensus).",
+    "segment": "Código da empresa SAP (ex: 0200=2W, 0500=4W).",
+    "market": "Mercado de destino (ex: Domestic, Export).",
+    "material": "Código do material/peça original (partnumber SAP).",
+    "main_material": "Material principal na cadeia de substituição (item_principal_cadeia via pr_cadastrao.material_cadeia).",
+    "forecast_classification": "Classificação do forecast (ex: Forecastable/Non-Forecastable).",
+    "forecast_classification_tag": "Tag extraída da classificação (tudo após o primeiro ' - ').",
+    "lag": "Offset em meses do horizonte (0 = mês corrente, até 11).",
+    "forecast_month": "Mês-alvo do forecast: forecast_cycle + lag meses.",
+    "forecast_qty": "Quantidade prevista para o mês-alvo.",
+    "_raw_load_id": "Identificador da carga original na tabela raw.",
+    "_ingested_at": "Data e hora da ingestão do registro.",
+    "_ingested_by": "Usuário responsável pela execução da carga.",
+    "_load_type": "Tipo de carga (incremental).",
+    "_load_id": "Identificador único da execução da carga (UUID).",
+}
+
+REFINED_METADATA_VERSION = "1"
+
+refined_props = (
+    spark.sql(f"DESCRIBE DETAIL {REFINED_TABLE}")
+    .select("properties").first()["properties"] or {}
+)
+
+if refined_props.get("forecast_refined_metadata_version") != REFINED_METADATA_VERSION:
+    spark.sql(
+        f"COMMENT ON TABLE {REFINED_TABLE} IS "
+        f"'{REFINED_COMMENT.replace(chr(39), chr(39)+chr(39))}'"
+    )
+    for col_name, comment in REFINED_COLUMN_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        spark.sql(f"COMMENT ON COLUMN {REFINED_TABLE}.`{col_name}` IS '{escaped}'")
+
+    spark.sql(f"""
+        ALTER TABLE {REFINED_TABLE} SET TAGS (
+            'domain' = 'forecast', 'layer' = 'refined',
+            'source' = 'sap', 'history_model' = 'append_incremental',
+            'data_classification' = 'internal'
+        )
+    """)
+    spark.sql(f"""
+        ALTER TABLE {REFINED_TABLE} SET TBLPROPERTIES (
+            'business_owner' = 'Demand Planning',
+            'technical_owner' = 'Andre Causs',
+            'data_domain' = 'Forecast',
+            'source_system' = 'SAP',
+            'refresh_frequency' = 'incremental_append',
+            'natural_key' = 'forecast_cycle, segment, material, lag',
+            'forecast_refined_metadata_version' = '{REFINED_METADATA_VERSION}'
+        )
+    """)
+    print(f"Metadados versão {REFINED_METADATA_VERSION} aplicados à tabela {REFINED_TABLE}")
+else:
+    print(f"Metadados versão {REFINED_METADATA_VERSION} já aplicados em {REFINED_TABLE}; DDL ignorada.")
+
+# COMMAND ----------
+
 # DBTITLE 1,Carregar utilitários de movimentação
 # MAGIC %run ../99_utils_volume_file_ops
 
