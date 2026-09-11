@@ -10,10 +10,11 @@
 # MAGIC - **Propósito:** Dinamizar as 36 colunas de horizonte (`n+0`…`n+35`) em linhas, calculando o mês-alvo do forecast.
 # MAGIC - **Entrada:** `parts_hdbk_sandbox.pr_forecast.raw_forecast_enriched`
 # MAGIC - **Saída:** `parts_hdbk_sandbox.pr_forecast.refined_forecast_enriched`
-# MAGIC - **Chave:** `forecast_cycle` + `segment` + `main_material` + `lag` · **Carga:** Incremental por `_load_id`
+# MAGIC - **Chave:** `forecast_cycle` + `segment` + `material` + `lag` · **Carga:** Incremental por `_load_id`
 # MAGIC - **Filtros:**
 # MAGIC   - Remoção de linhas Enrich com `forecast_qty = 0`
 # MAGIC   - Horizonte limitado aos **primeiros 12 meses** (`lag` 0–11)
+# MAGIC - **Lookup:** `material` → `main_material` via `pr_cadastrao.material_cadeia` (chave: `segment`=`empresa`, `material`=`material` → `item_principal_cadeia`)
 # MAGIC - **Auditoria:** `_ingested_at`, `_ingested_by`, `_load_type`, `_load_id`
 
 # COMMAND ----------
@@ -32,6 +33,7 @@ CATALOG     = "parts_hdbk_sandbox"
 SCHEMA      = "pr_forecast"
 SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.raw_forecast_enriched"
 TARGET_TABLE = f"{CATALOG}.{SCHEMA}.refined_forecast_enriched"
+LOOKUP_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_cadeia"
 
 # ---------------------------------------------------------------------------
 # Colunas
@@ -144,6 +146,35 @@ print(f"Removidos: {rows_before_filter - rows_after_filter:,}")
 # ---------------------------------------------------------------------------
 # Colunas de auditoria e ordem final
 # ---------------------------------------------------------------------------
+
+# Renomear main_material → material (partnumber original)
+df_unpivot = df_unpivot.withColumnRenamed("main_material", "material")
+
+# Lookup: trazer item_principal_cadeia como novo main_material
+df_cadeia = (
+    spark.table(LOOKUP_TABLE)
+    .select(
+        F.col("empresa"),
+        F.col("material").alias("_lookup_material"),
+        F.col("item_principal_cadeia"),
+    )
+)
+
+df_unpivot = (
+    df_unpivot
+    .join(
+        df_cadeia,
+        (F.col("segment") == F.col("empresa"))
+        & (F.col("material") == F.col("_lookup_material")),
+        "left",
+    )
+    .withColumn(
+        "main_material",
+        F.coalesce(F.col("item_principal_cadeia"), F.col("material")),
+    )
+    .drop("empresa", "_lookup_material", "item_principal_cadeia")
+)
+
 df_final = (
     df_unpivot
     .withColumns({
@@ -168,6 +199,7 @@ df_final = (
         "forecast_type",
         "segment",
         "market",
+        "material",
         "main_material",
         "forecast_classification",
         "forecast_classification_tag",
