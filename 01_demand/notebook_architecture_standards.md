@@ -114,6 +114,14 @@ documentação ou utilitários.
 Arquivos YAML só devem ser adicionados quando forem consumidos por automação,
 implantação ou validação. Não duplicar neles a documentação do cabeçalho.
 
+### Nomenclatura de diretórios em volumes
+
+- `current/` — arquivos aguardando processamento.
+- `archive/` — arquivos já processados e retidos para referência.
+- Preferir **archive** em vez de *history* ou *historical* para diretórios de
+  arquivos processados. O termo *history* é reservado para histórico de
+  alterações em tabelas (SCD2, changelogs).
+
 ## 6. Logs e consumo de recursos
 
 Em execução automática:
