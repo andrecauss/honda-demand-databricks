@@ -1,8 +1,8 @@
 # Padrões para notebooks Databricks
 
 - **Responsável:** Demand Planning — Honda Parts Division
-- **Versão:** 3.0
-- **Atualização:** 2026-09-05
+- **Versão:** 4.0
+- **Atualização:** 2026-09-11
 
 ## Objetivo
 
@@ -143,6 +143,65 @@ Em execução automática:
 | Histórico de mudanças | Git |
 | Configuração de jobs e ambientes | Automação declarativa, quando adotada |
 
+## 8. Metadados e governança no Unity Catalog
+
+Todo notebook que persiste dados em tabela Delta deve incluir uma **célula de
+metadados** após a célula de persistência. A célula aplica, de forma idempotente,
+os seguintes artefatos no Unity Catalog:
+
+### 8.1 Artefatos obrigatórios
+
+| Artefato | Comando | Exemplo |
+| --- | --- | --- |
+| Comentário de tabela | `COMMENT ON TABLE` | Modelo, chave, fonte, lookup |
+| Comentários de colunas | `COMMENT ON COLUMN` | Descrição de cada coluna |
+| Tags de governança | `ALTER TABLE SET TAGS` | domain, layer, source, history_model, data_classification |
+| Propriedades de negócio | `ALTER TABLE SET TBLPROPERTIES` | business_owner, technical_owner, data_domain, source_system, natural_key, refresh_frequency |
+
+### 8.2 Versionamento idempotente
+
+Para evitar DDL redundante em execuções repetidas, usar uma `TBLPROPERTIES` de
+versão (ex: `forecast_refined_metadata_version = '1'`). A célula verifica essa
+propriedade antes de aplicar e só executa DDL quando a versão muda.
+
+```python
+METADATA_VERSION = "1"
+props = (
+    spark.sql(f"DESCRIBE DETAIL {TABLE}")
+    .select("properties").first()["properties"] or {}
+)
+if props.get("my_metadata_version") != METADATA_VERSION:
+    # aplicar COMMENT ON TABLE, COMMENT ON COLUMN, SET TAGS, SET TBLPROPERTIES
+    ...
+```
+
+### 8.3 Tags padrão
+
+| Tag | Valores comuns |
+| --- | --- |
+| `domain` | forecast, demand, materials |
+| `layer` | raw, refined, analytical |
+| `source` | sap |
+| `history_model` | append_incremental, full_overwrite, monthly_snapshot, scd2 |
+| `data_classification` | internal |
+| `status` | legacy (apenas para tabelas descontinuadas) |
+
+### 8.4 Cópia para `_agents_databases`
+
+Quando uma tabela é replicada no schema `_agents_databases` (para consumo por
+agentes AI), a célula de metadados deve aplicar comentários e tags também na
+cópia, dentro de um `try/except` para não interromper o pipeline caso a cópia
+não exista.
+
+### 8.5 Nomes de colunas com caracteres especiais
+
+Colunas com `+`, espaço ou outros caracteres especiais (ex: `n+0`) devem ser
+envolvidas em backticks no `COMMENT ON COLUMN`:
+
+```python
+spark.sql(f"COMMENT ON COLUMN {TABLE}.`{col_name}` IS '{escaped}'")
+```
+
 ## Checklist
 
 Antes de publicar um notebook, verificar:
@@ -154,4 +213,6 @@ Antes de publicar um notebook, verificar:
 - [ ] parâmetros operacionais estão agrupados;
 - [ ] regras relevantes estão explicadas perto da transformação;
 - [ ] logs não provocam ações Spark desnecessárias;
-- [ ] outputs de execução não foram versionados.
+- [ ] outputs de execução não foram versionados;
+- [ ] célula de metadados presente (comments, tags, properties, versão);
+- [ ] tabelas em `_agents_databases` também possuem metadados.
