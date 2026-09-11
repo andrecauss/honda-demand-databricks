@@ -4,6 +4,7 @@
 # environment_version = "5"
 # ///
 
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -35,9 +36,19 @@ JANELA_MESES = 60
 # estourava o teto de exportação em arquivo único do notebook 6.2.
 JANELA_MESES_ZPUG_CLI = 12
 
+# Formato de saída das tabelas refinadas
+# Define como as tabelas serão criadas no schema de saída
+# Opções:
+#   "multi_tabela"  → Uma tabela por tipo de demanda POR segmento
+#                      (ex: refined_demand_fechada_HDA, refined_demand_fechada_HAB)
+#   "tabela_unica"  → Uma tabela por tipo de demanda, com append de todos os segmentos
+#                      (ex: refined_demand_fechada contendo dados HDA + HAB juntos)
+FORMATO_SAIDA = "multi_tabela"
+
 print(f"⚙️ Parâmetros configurados:")
 print(f"   • Janela temporal: {JANELA_MESES} meses fechados")
 print(f"   • Janela ZPUG por Cliente: {JANELA_MESES_ZPUG_CLI} meses fechados")
+print(f"   • Formato de saída: {FORMATO_SAIDA}")
 
 # COMMAND ----------
 
@@ -278,6 +289,14 @@ def _append(df_resultado, tabela):
         - Cria ou atualiza tabela Delta em parts_hdbk_sandbox.pr_demand
         - Exibe contagem de linhas no console
     """
+    # Em modo tabela_unica, remove sufixo de segmento (_HDA, _HAB)
+    # e adiciona coluna 'segmento' para identificação na tabela unificada
+    if FORMATO_SAIDA == "tabela_unica":
+        for sufixo in ("_HDA", "_HAB"):
+            if tabela.endswith(sufixo):
+                df_resultado = df_resultado.withColumn("segmento", lit(sufixo[1:]))
+                tabela = tabela[:-len(sufixo)]
+                break
     full_name = f"{SCHEMA}.{tabela}"
     if not spark.catalog.tableExists(full_name):
         df_resultado.createOrReplaceTempView("_tmp_write")
@@ -1153,6 +1172,7 @@ _append(resultado_hab, tabela_completa_hab)
 # ==============================================================================
 # Lista todas as tabelas refined_demand_* criadas no schema pr_demand,
 # exibindo contagens e organizando por segmento e tipo de demanda.
+# Adapta-se automaticamente ao FORMATO_SAIDA (multi_tabela ou tabela_unica).
 # ==============================================================================
 
 from pyspark.sql.functions import col, count, lit
@@ -1162,7 +1182,8 @@ print("="*80)
 print("📊 DIAGNÓSTICO FINAL - TABELAS REFINADAS DE DEMANDA")
 print("="*80)
 print(f"Schema: {SCHEMA}")
-print(f"Período: {data_minima} até {data_referencia.strftime('%Y-%m-%d')} ({JANELA_MESES} meses)\n")
+print(f"Período: {data_minima} até {data_referencia.strftime('%Y-%m-%d')} ({JANELA_MESES} meses)")
+print(f"Formato de saída: {FORMATO_SAIDA}\n")
 
 # Lista todas as tabelas no schema
 tabelas = spark.sql(f"SHOW TABLES IN {SCHEMA}").filter(
@@ -1172,87 +1193,112 @@ tabelas = spark.sql(f"SHOW TABLES IN {SCHEMA}").filter(
 if not tabelas:
     print("⚠️  Nenhuma tabela encontrada. Execute o notebook completamente.")
 else:
-    # Coleta informações de cada tabela
     dados_tabelas = []
     for row in tabelas:
         nome_tabela = row.tableName
         full_name = f"{SCHEMA}.{nome_tabela}"
 
-        # Conta linhas
         try:
-            num_linhas = spark.table(full_name).count()
+            df_tab = spark.table(full_name)
+            num_linhas = df_tab.count()
 
-            # Extrai segmento (HDA ou HAB)
-            if "_HDA_" in nome_tabela:
-                segmento = "HDA (2W)"
-            elif "_HAB_" in nome_tabela:
-                segmento = "HAB (4W)"
+            if FORMATO_SAIDA == "tabela_unica":
+                # Tipo extraído do nome (sem sufixo de segmento)
+                tipo = nome_tabela.replace("refined_demand_", "").replace("_", " ").title()
+
+                # Conta linhas por segmento usando a coluna 'segmento'
+                detalhe_seg = ""
+                if "segmento" in df_tab.columns:
+                    seg_counts = (
+                        df_tab.groupBy("segmento")
+                        .count()
+                        .orderBy("segmento")
+                        .collect()
+                    )
+                    detalhe_seg = " | ".join(
+                        f"{r['segmento']}: {r['count']:,}" for r in seg_counts
+                    )
+
+                dados_tabelas.append({
+                    "Tipo Demanda": tipo,
+                    "Nome Tabela": nome_tabela,
+                    "Linhas": num_linhas,
+                    "Detalhe Segmento": detalhe_seg,
+                })
             else:
-                segmento = "Outro"
+                # Segmento vem do sufixo do nome da tabela
+                if nome_tabela.endswith("_HDA"):
+                    segmento = "HDA (2W)"
+                elif nome_tabela.endswith("_HAB"):
+                    segmento = "HAB (4W)"
+                else:
+                    segmento = "Outro"
 
-            # Extrai tipo de demanda
-            tipo = nome_tabela.replace("refined_demand_", "").split("_HDA_")[0].split("_HAB_")[0]
-            tipo = tipo.replace("_", " ").title()
+                # Tipo removendo prefixo e sufixo de segmento
+                tipo = nome_tabela.replace("refined_demand_", "")
+                for suf in ("_HDA", "_HAB"):
+                    if tipo.endswith(suf):
+                        tipo = tipo[:-len(suf)]
+                        break
+                tipo = tipo.replace("_", " ").title()
 
-            # Extrai centro
-            if "_TTL" in nome_tabela:
-                centro = "TTL"
-            elif "_0203" in nome_tabela:
-                centro = "0203"
-            elif "_0209" in nome_tabela:
-                centro = "0209"
-            elif "_0232" in nome_tabela:
-                centro = "0232"
-            elif "_0503" in nome_tabela:
-                centro = "0503"
-            elif "_0505" in nome_tabela:
-                centro = "0505"
-            else:
-                centro = "-"
-
-            dados_tabelas.append({
-                "Segmento": segmento,
-                "Tipo Demanda": tipo,
-                "Centro": centro,
-                "Nome Tabela": nome_tabela,
-                "Linhas": num_linhas
-            })
+                dados_tabelas.append({
+                    "Segmento": segmento,
+                    "Tipo Demanda": tipo,
+                    "Nome Tabela": nome_tabela,
+                    "Linhas": num_linhas,
+                })
         except Exception as e:
             print(f"⚠️  Erro ao processar {nome_tabela}: {e}")
 
-    # Converte para DataFrame Pandas para exibição formatada
-    df_diagnostico = pd.DataFrame(dados_tabelas)
-    df_diagnostico = df_diagnostico.sort_values(["Segmento", "Tipo Demanda", "Centro"])
+    # --- Exibição conforme modo ---
+    if FORMATO_SAIDA == "tabela_unica":
+        df_diagnostico = pd.DataFrame(dados_tabelas)
+        df_diagnostico = df_diagnostico.sort_values("Tipo Demanda")
 
-    # Exibe por segmento
-    for segmento in df_diagnostico["Segmento"].unique():
+        for _, r in df_diagnostico.iterrows():
+            print(f"\n  📋 {r['Tipo Demanda']}:")
+            print(f"     Tabela: {r['Nome Tabela']}")
+            print(f"     Linhas: {r['Linhas']:,}")
+            if r["Detalhe Segmento"]:
+                print(f"     Segmentos: {r['Detalhe Segmento']}")
+
         print(f"\n{'='*80}")
-        print(f"🏍️  {segmento}" if "2W" in segmento else f"🚗  {segmento}")
+        print("📊 RESUMO GERAL")
         print(f"{'='*80}")
+        print(f"  Formato: tabela_unica (tabelas unificadas por tipo de demanda)")
+        print(f"  Total de tabelas criadas: {len(dados_tabelas)}")
+        print(f"  Total de linhas (todas as tabelas): {df_diagnostico['Linhas'].sum():,}")
 
-        df_seg = df_diagnostico[df_diagnostico["Segmento"] == segmento]
+    else:  # multi_tabela
+        df_diagnostico = pd.DataFrame(dados_tabelas)
+        df_diagnostico = df_diagnostico.sort_values(["Segmento", "Tipo Demanda"])
 
-        for tipo in df_seg["Tipo Demanda"].unique():
-            df_tipo = df_seg[df_seg["Tipo Demanda"] == tipo]
-            total_linhas = df_tipo["Linhas"].sum()
-            num_tabelas = len(df_tipo)
+        for segmento in df_diagnostico["Segmento"].unique():
+            print(f"\n{'='*80}")
+            print(f"🏍️  {segmento}" if "2W" in segmento else f"🚗  {segmento}")
+            print(f"{'='*80}")
 
-            print(f"\n  📋 {tipo}:")
-            print(f"     Tabelas: {num_tabelas}")
+            df_seg = df_diagnostico[df_diagnostico["Segmento"] == segmento]
 
-            for _, row in df_tipo.iterrows():
-                print(f"     • {row['Centro']:4s} → {row['Nome Tabela']:60s} ({row['Linhas']:,} linhas)")
+            for tipo in df_seg["Tipo Demanda"].unique():
+                df_tipo = df_seg[df_seg["Tipo Demanda"] == tipo]
+                total_linhas = df_tipo["Linhas"].sum()
 
-            print(f"     ─────────────────────────────────────────────────────────────────────")
-            print(f"     TOTAL {tipo}: {total_linhas:,} linhas")
+                print(f"\n  📋 {tipo}:")
+                for _, r in df_tipo.iterrows():
+                    print(f"     • {r['Nome Tabela']:60s} ({r['Linhas']:,} linhas)")
+                print(f"     {'─'*71}")
+                print(f"     TOTAL {tipo}: {total_linhas:,} linhas")
 
-    # Resumo geral
-    print(f"\n{'='*80}")
-    print("📊 RESUMO GERAL")
-    print(f"{'='*80}")
-    print(f"  Total de tabelas criadas: {len(dados_tabelas)}")
-    print(f"  Total de linhas (todas as tabelas): {df_diagnostico['Linhas'].sum():,}")
-    print(f"  Tabelas HDA (2W): {len(df_diagnostico[df_diagnostico['Segmento'] == 'HDA (2W)'])}")
-    print(f"  Tabelas HAB (4W): {len(df_diagnostico[df_diagnostico['Segmento'] == 'HAB (4W)'])}")
+        print(f"\n{'='*80}")
+        print("📊 RESUMO GERAL")
+        print(f"{'='*80}")
+        print(f"  Formato: multi_tabela (tabelas separadas por segmento)")
+        print(f"  Total de tabelas criadas: {len(dados_tabelas)}")
+        print(f"  Total de linhas (todas as tabelas): {df_diagnostico['Linhas'].sum():,}")
+        print(f"  Tabelas HDA (2W): {len(df_diagnostico[df_diagnostico['Segmento'] == 'HDA (2W)'])}")
+        print(f"  Tabelas HAB (4W): {len(df_diagnostico[df_diagnostico['Segmento'] == 'HAB (4W)'])}")
+
     print(f"\n✅ Pipeline de refinamento executado com sucesso!")
-    print(f"={'='*80}\n")
+    print(f"{'='*80}\n")
