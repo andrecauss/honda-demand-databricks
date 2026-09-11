@@ -4,6 +4,7 @@
 # environment_version = "5"
 # ///
 
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -219,3 +220,82 @@ TABELA_DESTINO = "parts_hdbk_sandbox._agents_databases.demand_analytical_base"
 df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(TABELA_DESTINO)
 
 print(f"✓ Tabela {TABELA_DESTINO} criada/atualizada.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Metadados da tabela demand_analytical_base
+# ==============================================================================
+# METADADOS DA TABELA DEMAND_ANALYTICAL_BASE
+# ==============================================================================
+# Aplica comentários de tabela e colunas, tags de governança e
+# propriedades de negócio na tabela _agents_databases.demand_analytical_base.
+# Garante rastreabilidade e documentação no Unity Catalog.
+# ==============================================================================
+
+DAB_TABLE = TABELA_DESTINO
+DAB_COMMENT = """
+Base analítica de demanda para agentes AI. Ordens de venda enriquecidas com cadeia de materiais e dados de cliente.
+
+Modelo: Overwrite completo a cada execução
+Chave: numero_ordem_venda + item_ordem_venda
+Fonte: raw_sales_order + material_cadeia + knvv_sap + kna1_sap (joins)
+"""
+
+DAB_COLUMN_COMMENTS = {
+    "numero_ordem_venda": "Número da ordem de venda SAP.",
+    "item_ordem_venda": "Número do item dentro da ordem de venda.",
+    "data_ordem": "Data da ordem de venda.",
+    "tipo_ordem_venda": "Tipo da ordem de venda SAP.",
+    "organizacao_vendas": "Código da organização de vendas (ex: 0200=2W, 0500=4W).",
+    "canal_distribuicao": "Canal de distribuição (01=Doméstico, 02=Exportação).",
+    "codigo_cliente": "Código do cliente (emissor da ordem).",
+    "centro_fornecedor": "Código do centro fornecedor SAP.",
+    "codigo_material": "Código do material/peça (partnumber SAP).",
+    "quantidade": "Quantidade solicitada no item da ordem.",
+    "item_principal_cadeia": "Material principal na cadeia de substituição.",
+    "centro_distribuicao_original": "Centro de distribuição original do cliente.",
+    "cliente": "Razão social do cliente.",
+    "uf_cliente": "Estado/UF do cliente.",
+    "pais_cliente": "País do cliente.",
+    "segmento": "Segmento de negócio (2W - Motos / 4W - Automóveis).",
+    "mercado": "Mercado de destino (Doméstico / Exportação).",
+    "centro_nome": "Nome descritivo do centro de distribuição.",
+}
+
+DAB_METADATA_VERSION = "1"
+
+dab_props = (
+    spark.sql(f"DESCRIBE DETAIL {DAB_TABLE}")
+    .select("properties").first()["properties"] or {}
+)
+
+if dab_props.get("dab_metadata_version") != DAB_METADATA_VERSION:
+    spark.sql(
+        f"COMMENT ON TABLE {DAB_TABLE} IS "
+        f"'{DAB_COMMENT.replace(chr(39), chr(39)+chr(39))}'"
+    )
+    for col_name, comment in DAB_COLUMN_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        spark.sql(f"COMMENT ON COLUMN {DAB_TABLE}.`{col_name}` IS '{escaped}'")
+
+    spark.sql(f"""
+        ALTER TABLE {DAB_TABLE} SET TAGS (
+            'domain' = 'demand', 'layer' = 'analytical',
+            'source' = 'sap', 'history_model' = 'full_overwrite',
+            'data_classification' = 'internal'
+        )
+    """)
+    spark.sql(f"""
+        ALTER TABLE {DAB_TABLE} SET TBLPROPERTIES (
+            'business_owner' = 'Demand Planning',
+            'technical_owner' = 'Andre Causs',
+            'data_domain' = 'Demand Analytics',
+            'source_system' = 'SAP',
+            'refresh_frequency' = 'full_overwrite',
+            'natural_key' = 'numero_ordem_venda, item_ordem_venda',
+            'dab_metadata_version' = '{DAB_METADATA_VERSION}'
+        )
+    """)
+    print(f"Metadados versão {DAB_METADATA_VERSION} aplicados à tabela {DAB_TABLE}")
+else:
+    print(f"Metadados versão {DAB_METADATA_VERSION} já aplicados em {DAB_TABLE}; DDL ignorada.")
