@@ -8,7 +8,7 @@
 # MAGIC
 # MAGIC - **Propósito:** Manter o histórico das alterações do cadastro mestre de materiais.
 # MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
-# MAGIC - **Saídas:** `pr_cadastrao.material_spec_changes` e `_agents_databases.material_spec_changes`
+# MAGIC - **Saídas:** `pr_cadastrao.material_spec_changes` (tabela) e `_agents_databases.material_spec_changes` (view, sem colunas de auditoria)
 # MAGIC - **Chave:** Empresa + Material · **Carga:** Mensal, SCD Type 2
 
 # COMMAND ----------
@@ -545,22 +545,155 @@ print(f"Carga SCD2 concluída na tabela principal: {MAIN_TABLE}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Aplicar SCD2 em _agents_databases
+# DBTITLE 1,View para _agents_databases (sem auditoria)
 # ------------------------------------------------------------------------------
-# RÉPLICA SCD2 - TABELA _AGENTS_DATABASES
+# VIEW PARA _AGENTS_DATABASES (SEM COLUNAS DE AUDITORIA)
 # ------------------------------------------------------------------------------
-# Aplica o mesmo processo SCD2 na réplica usada por agentes de IA,
-# garantindo consistência entre as duas tabelas de destino.
+# Cria uma view sobre a tabela principal, excluindo colunas de auditoria.
+# Sem duplicação de dados — sempre sincronizada com a tabela fonte.
+# Comentários de coluna são herdados automaticamente da tabela base.
 # ------------------------------------------------------------------------------
 
 # Criar schema se não existir
 spark.sql("""
     CREATE SCHEMA IF NOT EXISTS parts_hdbk_sandbox._agents_databases
-    COMMENT 'Schema para réplicas de tabelas acessadas por agentes de IA'
+    COMMENT 'Schema para views acessadas por agentes de IA'
 """)
 
-apply_scd2_merge(AGENTS_TABLE)
-print(f"Carga SCD2 concluída na réplica adicional: {AGENTS_TABLE}")
+AGENTS_VIEW_COMMENT = (
+    "View SCD2 do cadastro mestre de materiais SAP para agentes de IA. "
+    "Exclui colunas de auditoria. Fonte: "
+    f"{MAIN_TABLE}"
+)
+
+spark.sql(f"""
+    CREATE OR REPLACE VIEW {AGENTS_TABLE}
+    COMMENT '{AGENTS_VIEW_COMMENT}'
+    AS
+    SELECT
+        empresa, material,
+        intercambiabilidade, item_principal_cadeia, data_cadeia,
+        cut_in_material, cut_off_material, cadeia,
+        modelo_comercial_principal, status_compra,
+        row_hash, start_date, end_date, is_current
+    FROM {MAIN_TABLE}
+""")
+
+print(f"View criada: {AGENTS_TABLE}")
+print(f"Fonte: {MAIN_TABLE}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Metadados da tabela histórica principal
+# ==============================================================================
+# METADADOS DA TABELA HISTÓRICA PRINCIPAL
+# ==============================================================================
+# Aplica comentários de tabela e colunas, tags de governança e
+# propriedades de negócio na tabela material_spec_changes.
+# Garante rastreabilidade e documentação no Unity Catalog.
+# ==============================================================================
+
+SCD2_COMMENT = """
+Histórico SCD2 do cadastro mestre de materiais SAP.
+
+Modelo: Slowly Changing Dimension Type 2 com Hash Comparison
+Chave de negócio: empresa + material
+Campos rastreados: intercambiabilidade, item_principal_cadeia, data_cadeia,
+    cut_in_material, cut_off_material, cadeia, modelo_comercial_principal,
+    status_compra
+Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
+"""
+
+SCD2_COLUMN_COMMENTS = {
+    "empresa": "Código da empresa SAP (ex: 0200=2W, 0500=4W). Parte da chave de negócio histórica.",
+    "material": "Código único do material/peça (partnumber SAP). Parte da chave de negócio histórica.",
+    "intercambiabilidade": "Indicador de intercambiabilidade do material.",
+    "item_principal_cadeia": "Item principal na cadeia de substituição.",
+    "data_cadeia": "Data da cadeia de substituição.",
+    "cut_in_material": "Material substituto (cut-in) na cadeia.",
+    "cut_off_material": "Material descontinuado (cut-off) na cadeia.",
+    "cadeia": "Identificador da cadeia de substituição.",
+    "modelo_comercial_principal": "Modelo comercial principal associado ao material.",
+    "status_compra": "Status de compra do material no SAP.",
+    "row_hash": "SHA-256 dos campos rastreados para detecção de mudanças (SCD2).",
+    "start_date": "Data de início da versão (SCD2). Sentinel 1900-01-01 na carga inicial.",
+    "end_date": "Data de encerramento da versão (SCD2). NULL se vigente.",
+    "is_current": "Flag indicando se é a versão corrente do registro.",
+    "_ingested_at": "Timestamp da primeira ingestão do registro.",
+    "_last_updated_at": "Timestamp da última atualização (merge/update).",
+    "_ingested_by": "Usuário responsável pela execução da carga.",
+    "_load_type": "Tipo de carga executada (ex: scd2_hash).",
+    "_load_id": "Identificador único da execução da carga (UUID).",
+    "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
+}
+
+METADATA_VERSION = "1"
+table_properties = (
+    spark.sql(f"DESCRIBE DETAIL {MAIN_TABLE}")
+    .select("properties")
+    .first()["properties"]
+    or {}
+)
+current_metadata_version = table_properties.get("scd2_metadata_version")
+
+if current_metadata_version != METADATA_VERSION:
+    spark.sql(
+        f"COMMENT ON TABLE {MAIN_TABLE} IS "
+        f"'{SCD2_COMMENT.replace(chr(39), chr(39) + chr(39))}'"
+    )
+
+    for col_name, comment in SCD2_COLUMN_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        spark.sql(f"COMMENT ON COLUMN {MAIN_TABLE}.{col_name} IS '{escaped}'")
+
+    spark.sql(f"""
+        ALTER TABLE {MAIN_TABLE} SET TAGS (
+            'domain' = 'materials', 'layer' = 'refined',
+            'source' = 'sap', 'history_model' = 'scd2_hash',
+            'data_classification' = 'internal'
+        )
+    """)
+
+    spark.sql(f"""
+        ALTER TABLE {MAIN_TABLE} SET TBLPROPERTIES (
+            'business_owner' = 'Demand Planning',
+            'technical_owner' = 'Andre Causs',
+            'data_domain' = 'Materials Master',
+            'source_system' = 'SAP',
+            'refresh_frequency' = 'monthly_scd2',
+            'natural_key' = 'empresa, material',
+            'scd2_metadata_version' = '{METADATA_VERSION}'
+        )
+    """)
+
+    print(f"Metadados versão {METADATA_VERSION} aplicados à tabela {MAIN_TABLE}")
+else:
+    print(f"Metadados versão {METADATA_VERSION} já aplicados; DDL de governança ignorada.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Metadados da view _agents_databases
+# ------------------------------------------------------------------------------
+# METADADOS DA VIEW _AGENTS_DATABASES
+# ------------------------------------------------------------------------------
+# Aplica propriedades e tags na view usada por agentes de IA.
+# Comentários de tabela e colunas já foram definidos via CREATE VIEW
+# e são herdados da tabela base, respectivamente.
+# Aplicado incondicionalmente (views são recriadas a cada execução).
+# ------------------------------------------------------------------------------
+
+spark.sql(f"""
+    ALTER VIEW {AGENTS_TABLE} SET TBLPROPERTIES (
+        'business_owner' = 'Demand Planning',
+        'technical_owner' = 'Andre Causs',
+        'data_domain' = 'Materials Master',
+        'source_system' = 'SAP',
+        'natural_key' = 'empresa, material',
+        'view_of' = '{MAIN_TABLE}'
+    )
+""")
+
+print(f"Propriedades aplicadas à view {AGENTS_TABLE}")
 
 # COMMAND ----------
 
@@ -607,6 +740,23 @@ print(f"Carga SCD2 concluída na réplica adicional: {AGENTS_TABLE}")
 # tabelas de destino. Garante rastreabilidade e documentação no Unity Catalog.
 # ==============================================================================
 
+# Verifica se os metadados já foram aplicados (presença de tags na tabela)
+_metadata_already_applied = False
+try:
+    _tags = spark.sql(f"SELECT tag_name FROM system.information_schema.table_tags WHERE catalog_name = 'parts_hdbk_sandbox' AND schema_name = 'pr_cadastrao' AND table_name = 'material_spec_changes' AND tag_name = 'domain'").count()
+    _metadata_already_applied = _tags > 0
+except Exception:
+    _metadata_already_applied = False
+
+if not _metadata_already_applied:
+    print("Metadados ainda não aplicados ou tabela recém-criada. Aplicando...")
+else:
+    print("Metadados já aplicados anteriormente. Pulando célula. (Para reaplicar, remova as tags da tabela.)")
+
+# Só executa o restante se os metadados ainda não foram aplicados
+if not _metadata_already_applied:
+    pass  # bloco de guarda — o código real segue abaixo
+
 TARGET_TABLES = [MAIN_TABLE, AGENTS_TABLE]
 
 COLUMN_COMMENTS = {
@@ -652,7 +802,8 @@ Atualização: append histórico quando houver mudança nos campos rastreados ou
 Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
 """
 
-for target_table in TARGET_TABLES:
+if not _metadata_already_applied:
+  for target_table in TARGET_TABLES:
     spark.sql(f"""
         COMMENT ON TABLE {target_table} IS '{TABLE_COMMENT.replace(chr(39), chr(39)+chr(39))}'
     """)
@@ -696,4 +847,7 @@ for target_table in TARGET_TABLES:
 
     print(f"Metadados aplicados à tabela {target_table}")
 
-print(f"\nMetadados completos aplicados \u00e0s tabelas SCD2: {TARGET_TABLES}")
+  print(f"\nMetadados completos aplicados às tabelas SCD2: {TARGET_TABLES}")
+
+if _metadata_already_applied:
+    print(f"Tabelas SCD2 já possuem metadados: {TARGET_TABLES}")

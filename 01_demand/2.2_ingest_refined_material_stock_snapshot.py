@@ -3,12 +3,13 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
+# DBTITLE 1,Célula 1
 # MAGIC %md
 # MAGIC # 2.2 — Snapshot de estoque de materiais
 # MAGIC
 # MAGIC - **Propósito:** Registrar mensalmente estoques, quantidades e preços dos materiais.
 # MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
-# MAGIC - **Saída:** `pr_cadastrao.material_inventory_history`
+# MAGIC - **Saídas:** `pr_cadastrao.material_inventory_history` (tabela) e `_agents_databases.material_inventory_history` (view, sem colunas de auditoria)
 # MAGIC - **Chave:** Empresa + Material + Centro + Data de referência · **Carga:** Mensal, substituição atômica por centro
 
 # COMMAND ----------
@@ -160,7 +161,7 @@ print(f"DataFrame preparado: {len(df.columns)} colunas")
 # SNAPSHOT MENSAL DE INVENTÁRIO
 # ==============================================================================
 # Agregação: empresa + material + centro (duplicatas idênticas são consolidadas)
-# Operação: conversão de tipos, cálculo de stock_total e substituição atômica dos centros processados
+# Operação: conversão de tipos, cálculo de estoque_total e substituição atômica dos centros processados
 # Proteções: chaves obrigatórias, conflito por chave e validação numérica
 # Saída: parts_hdbk_sandbox.pr_cadastrao.material_inventory_history
 # Nota: reference_date extraída do padrão CAD{centro}_{yyyy}.{MM}.xlsx
@@ -375,7 +376,7 @@ STOCK_TOTAL_COLUMNS = [
 ]
 
 inventory_df = inventory_df.withColumns({
-    "stock_total": sum(F.coalesce(F.col(c), F.lit(0).cast("decimal(18,2)")) for c in STOCK_TOTAL_COLUMNS).cast("decimal(18,2)"),
+    "estoque_total": sum(F.coalesce(F.col(c), F.lit(0).cast("decimal(18,2)")) for c in STOCK_TOTAL_COLUMNS).cast("decimal(18,2)"),
     "reference_date": F.lit(REFERENCE_DATE).cast("date"),
     "_ingested_at": F.lit(LOAD_TS),
     "_ingested_by": F.lit(CURRENT_USER),
@@ -386,13 +387,23 @@ inventory_df = inventory_df.withColumns({
 TARGET_COLUMNS = [
     "centro", "material", "empresa",
     *DECIMAL_COLUMNS,
-    "stock_total", "reference_date",
+    "estoque_total", "reference_date",
     "_ingested_at", "_ingested_by", "_load_id", "_source_file_path",
 ]
 inventory_df = inventory_df.select(*TARGET_COLUMNS)
 
 if not inventory_df.limit(1).collect():
     raise ValueError("O snapshot de inventário está vazio; nenhuma tabela foi alterada.")
+
+# --- Migração: renomear stock_total → estoque_total (idempotente) ---
+try:
+    spark.sql(f"ALTER TABLE {INVENTORY_TABLE} RENAME COLUMN stock_total TO estoque_total")
+    print("Coluna migrada: stock_total → estoque_total")
+except Exception as _rename_err:
+    if "COLUMN_NOT_FOUND" in str(_rename_err) or "cannot find" in str(_rename_err).lower():
+        pass  # coluna já renomeada ou tabela ainda não existe
+    else:
+        raise
 
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {INVENTORY_TABLE} (
@@ -403,7 +414,7 @@ spark.sql(f"""
         estoque_devolucoes DECIMAL(18,2), saldo_da_carteira_de_pedidos DECIMAL(18,2),
         quantidade_em_pi DECIMAL(18,2), quantidade_em_bo DECIMAL(18,2),
         preco_de_rede_price_de_venda_liquida DECIMAL(18,2),
-        stock_total DECIMAL(18,2),
+        estoque_total DECIMAL(18,2),
         reference_date DATE,
         _ingested_at TIMESTAMP, _ingested_by STRING,
         _load_id STRING, _source_file_path STRING
@@ -474,6 +485,50 @@ print(f"Registros gravados nos escopos processados: {written_count}")
 
 # COMMAND ----------
 
+# DBTITLE 1,View para _agents_databases (sem auditoria)
+# ------------------------------------------------------------------------------
+# VIEW PARA _AGENTS_DATABASES (SEM COLUNAS DE AUDITORIA)
+# ------------------------------------------------------------------------------
+# Cria uma view sobre a tabela principal, excluindo colunas de auditoria.
+# Sem duplicação de dados — sempre sincronizada com a tabela fonte.
+# Comentários de coluna são herdados automaticamente da tabela base.
+# ------------------------------------------------------------------------------
+
+AGENTS_TABLE = "parts_hdbk_sandbox._agents_databases.material_inventory_history"
+
+# Criar schema se não existir
+spark.sql("""
+    CREATE SCHEMA IF NOT EXISTS parts_hdbk_sandbox._agents_databases
+    COMMENT 'Schema para views acessadas por agentes de IA'
+""")
+
+AGENTS_VIEW_COMMENT = (
+    "View do snapshot mensal de estoques e preços de materiais SAP para agentes de IA. "
+    "Exclui colunas de auditoria. Fonte: "
+    f"{INVENTORY_TABLE}"
+)
+
+spark.sql(f"""
+    CREATE OR REPLACE VIEW {AGENTS_TABLE}
+    COMMENT '{AGENTS_VIEW_COMMENT}'
+    AS
+    SELECT
+        centro, material, empresa,
+        estoque_livre_no_centro, estoque_disponivel_para_venda,
+        estoque_bloqueado, estoque_em_transito,
+        estoque_em_poder_de_terceiros, estoque_em_controle_qualidade,
+        estoque_devolucoes, saldo_da_carteira_de_pedidos,
+        quantidade_em_pi, quantidade_em_bo,
+        preco_de_rede_price_de_venda_liquida,
+        estoque_total, reference_date
+    FROM {INVENTORY_TABLE}
+""")
+
+print(f"View criada: {AGENTS_TABLE}")
+print(f"Fonte: {INVENTORY_TABLE}")
+
+# COMMAND ----------
+
 # DBTITLE 1,Metadados da tabela de inventário
 # ==============================================================================
 # METADADOS DA TABELA DE INVENTÁRIO
@@ -506,7 +561,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "quantidade_em_pi": "Quantidade em Pedidos de Importação (PI).",
     "quantidade_em_bo": "Quantidade em Back Order (BO) - pedidos pendentes.",
     "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede).",
-    "stock_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
+    "estoque_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
     "reference_date": "Primeiro dia do mês de referência, extraído do nome do arquivo fonte.",
     "_ingested_at": "Data e hora da ingestão do snapshot.",
     "_ingested_by": "Usuário responsável pela execução da carga.",
@@ -514,7 +569,7 @@ INVENTORY_COLUMN_COMMENTS = {
     "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
 }
 
-METADATA_VERSION = "4"
+METADATA_VERSION = "5"
 table_properties = (
     spark.sql(f"DESCRIBE DETAIL {INVENTORY_TABLE}")
     .select("properties")
@@ -556,3 +611,28 @@ if current_metadata_version != METADATA_VERSION:
     print(f"Metadados versão {METADATA_VERSION} aplicados à tabela {INVENTORY_TABLE}")
 else:
     print(f"Metadados versão {METADATA_VERSION} já aplicados; DDL de governança ignorada.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Metadados da view _agents_databases
+# ------------------------------------------------------------------------------
+# METADADOS DA VIEW _AGENTS_DATABASES
+# ------------------------------------------------------------------------------
+# Aplica propriedades na view usada por agentes de IA.
+# Comentário da view já definido no CREATE VIEW; comentários de coluna
+# são herdados da tabela base automaticamente.
+# Aplicado incondicionalmente (views são recriadas a cada execução).
+# ------------------------------------------------------------------------------
+
+spark.sql(f"""
+    ALTER VIEW {AGENTS_TABLE} SET TBLPROPERTIES (
+        'business_owner' = 'Demand Planning',
+        'technical_owner' = 'Andre Causs',
+        'data_domain' = 'Materials Inventory',
+        'source_system' = 'SAP',
+        'natural_key' = 'empresa, material, centro, reference_date',
+        'view_of' = '{INVENTORY_TABLE}'
+    )
+""")
+
+print(f"Propriedades aplicadas à view {AGENTS_TABLE}")

@@ -12,7 +12,7 @@
 # MAGIC
 # MAGIC - **Propósito:** Disponibilizar ordens de venda enriquecidas em uma base analítica unificada.
 # MAGIC - **Entradas:** `raw_sales_order`, `material_cadeia`, `knvv_sap` e `kna1_sap`
-# MAGIC - **Saída:** `_agents_databases.demand_analytical_base`
+# MAGIC - **Saída:** `_agents_databases.demand_analytical_base` (view)
 # MAGIC - **Granularidade:** Item da ordem de venda · **Carga:** Completa
 
 # COMMAND ----------
@@ -145,7 +145,7 @@ print(f"✓ View vw_sales_orders criada com filtro: data >= {data_minima}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Mapeamento de Campos
+# DBTITLE 1,View demand_analytical_base
 from pyspark.sql.functions import col
 
 # ==============================================================================
@@ -181,65 +181,88 @@ MAPEAMENTO_CAMPOS = {
 }
 
 # ==============================================================================
-# APLICA RENOMEAÇÃO E CONVERSÃO DE TIPOS
+# OUTPUT: VIEW demand_analytical_base
 # ==============================================================================
-# Fonte: vw_sales_orders (view criada na célula anterior)
-# Lógica: computa colunas disponíveis uma única vez (evita Analyze RPC
-# repetido dentro do loop — lint SCPAP001).
-# ==============================================================================
-
-df = spark.table("vw_sales_orders")
-
-# Computa schema uma vez antes do loop para evitar RPCs repetidos
-colunas_disponiveis = set(df.columns)
-
-colunas_select = [
-    (col(col_original).cast(tipo) if tipo else col(col_original)).alias(col_novo)
-    for col_original, (col_novo, tipo) in MAPEAMENTO_CAMPOS.items()
-    if col_original in colunas_disponiveis
-]
-
-df = df.select(colunas_select)
-
-print("✓ Mapeamento aplicado (nome + tipo). Schema resultante:")
-for field in df.schema.fields:
-    print(f"   • {field.name:<30} {field.dataType.simpleString()}")
-
-display(df.limit(5))
-
-# ==============================================================================
-# OUTPUT: demand_analytical_base
-# ==============================================================================
-# Persiste o DataFrame já mapeado (nomes + tipos) como tabela Delta.
-# Saída: parts_hdbk_sandbox._agents_databases.demand_analytical_base
-# Mode: overwrite (tabela é recriada a cada execução)
+# Cria view persistente com joins + mapeamento de campos em SQL puro.
+# Sem materialização — sempre sincronizada com as tabelas fonte.
+# A janela temporal ({JANELA_MESES} meses) é aplicada dinamicamente via
+# subquery sobre a data mais recente de raw_sales_order.
 # ==============================================================================
 
 TABELA_DESTINO = "parts_hdbk_sandbox._agents_databases.demand_analytical_base"
 
-df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(TABELA_DESTINO)
+VIEW_COMMENT = (
+    "Base analítica de demanda para agentes de IA. "
+    "Ordens de venda enriquecidas com cadeia de materiais e dados de cliente. "
+    f"Janela temporal: {JANELA_MESES} meses."
+)
 
-print(f"✓ Tabela {TABELA_DESTINO} criada/atualizada.")
+spark.sql(f"""
+    CREATE OR REPLACE VIEW {TABELA_DESTINO}
+    COMMENT '{VIEW_COMMENT}'
+    AS
+    SELECT
+      CAST(rso.numero_ov AS STRING)              AS numero_ordem_venda,
+      CAST(rso.item AS STRING)                   AS item_ordem_venda,
+      CAST(rso.data AS DATE)                     AS data_ordem,
+      CAST(rso.tipo_ov AS STRING)                AS tipo_ordem_venda,
+      CAST(rso.org_vendas AS STRING)             AS organizacao_vendas,
+      CAST(rso.canal_dist AS STRING)             AS canal_distribuicao,
+      CAST(rso.emissor_da_ordem AS STRING)       AS codigo_cliente,
+      CAST(rso.centro AS STRING)                 AS centro_fornecedor,
+      CAST(rso.material AS STRING)               AS codigo_material,
+      CAST(rso.quantidade AS INT)                AS quantidade,
+      CAST(COALESCE(mc.item_principal_cadeia, rso.material) AS STRING)
+                                                 AS item_principal_cadeia,
+      CAST(k.cen AS STRING)                      AS centro_distribuicao_original,
+      CAST(kna.razao_social AS STRING)           AS cliente,
+      CAST(kna.estado AS STRING)                 AS uf_cliente,
+      CAST(kna.pais AS STRING)                   AS pais_cliente,
+      CASE WHEN rso.org_vendas = '0200' THEN '2W - Motos'
+           WHEN rso.org_vendas = '0500' THEN '4W - Automóveis'
+      END                                        AS segmento,
+      CASE WHEN rso.canal_dist = '01' THEN 'Doméstico'
+           WHEN rso.canal_dist = '02' THEN 'Exportação'
+      END                                        AS mercado,
+      CASE rso.centro
+        WHEN '0203' THEN 'Sumaré 2W'
+        WHEN '0503' THEN 'Sumaré 4W'
+        WHEN '0209' THEN 'Jaboatão 2W'
+        WHEN '0505' THEN 'Jaboatão 4W'
+        WHEN '0232' THEN 'Manaus 2W'
+      END                                        AS centro_nome
+    FROM parts_hdbk_sandbox.dt_sales_orders.raw_sales_order rso
+    LEFT JOIN parts_hdbk_sandbox.pr_cadastrao.material_cadeia mc
+      ON rso.material = mc.material AND rso.org_vendas = mc.empresa
+    LEFT JOIN parts_hdbk_sandbox.dm_customers.knvv_sap k
+      ON rso.emissor_da_ordem = k.cliente
+      AND rso.org_vendas = k.orgv
+      AND rso.canal_dist = k.cdst
+      AND rso.setor_ativ = k.sa
+    LEFT JOIN parts_hdbk_sandbox.dm_customers.kna1_sap kna
+      ON rso.emissor_da_ordem = kna.cliente
+    WHERE rso.data >= date_trunc('month', add_months(
+        (SELECT max(data) FROM parts_hdbk_sandbox.dt_sales_orders.raw_sales_order),
+        -{JANELA_MESES - 1}
+    ))
+""")
+
+print(f"✓ View {TABELA_DESTINO} criada/atualizada.")
+print(f"  Janela temporal: {JANELA_MESES} meses")
+print(f"  Schema:")
+for field in spark.table(TABELA_DESTINO).schema.fields:
+    print(f"   • {field.name:<30} {field.dataType.simpleString()}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Metadados da tabela demand_analytical_base
+# DBTITLE 1,Metadados da view demand_analytical_base
 # ==============================================================================
-# METADADOS DA TABELA DEMAND_ANALYTICAL_BASE
+# METADADOS DA VIEW DEMAND_ANALYTICAL_BASE
 # ==============================================================================
-# Aplica comentários de tabela e colunas, tags de governança e
-# propriedades de negócio na tabela _agents_databases.demand_analytical_base.
-# Garante rastreabilidade e documentação no Unity Catalog.
+# Aplica comentários de colunas e propriedades na view.
+# Comentário da view já definido no CREATE VIEW.
+# Aplicado incondicionalmente (views são recriadas a cada execução).
 # ==============================================================================
-
-DAB_TABLE = TABELA_DESTINO
-DAB_COMMENT = """
-Base analítica de demanda para agentes AI. Ordens de venda enriquecidas com cadeia de materiais e dados de cliente.
-
-Modelo: Overwrite completo a cada execução
-Chave: numero_ordem_venda + item_ordem_venda
-Fonte: raw_sales_order + material_cadeia + knvv_sap + kna1_sap (joins)
-"""
 
 DAB_COLUMN_COMMENTS = {
     "numero_ordem_venda": "Número da ordem de venda SAP.",
@@ -262,40 +285,18 @@ DAB_COLUMN_COMMENTS = {
     "centro_nome": "Nome descritivo do centro de distribuição.",
 }
 
-DAB_METADATA_VERSION = "1"
+for col_name, comment in DAB_COLUMN_COMMENTS.items():
+    escaped = comment.replace("'", "''")
+    spark.sql(f"COMMENT ON COLUMN {TABELA_DESTINO}.`{col_name}` IS '{escaped}'")
 
-dab_props = (
-    spark.sql(f"DESCRIBE DETAIL {DAB_TABLE}")
-    .select("properties").first()["properties"] or {}
-)
-
-if dab_props.get("dab_metadata_version") != DAB_METADATA_VERSION:
-    spark.sql(
-        f"COMMENT ON TABLE {DAB_TABLE} IS "
-        f"'{DAB_COMMENT.replace(chr(39), chr(39)+chr(39))}'"
+spark.sql(f"""
+    ALTER VIEW {TABELA_DESTINO} SET TBLPROPERTIES (
+        'business_owner' = 'Demand Planning',
+        'technical_owner' = 'Andre Causs',
+        'data_domain' = 'Demand Analytics',
+        'source_system' = 'SAP',
+        'natural_key' = 'numero_ordem_venda, item_ordem_venda'
     )
-    for col_name, comment in DAB_COLUMN_COMMENTS.items():
-        escaped = comment.replace("'", "''")
-        spark.sql(f"COMMENT ON COLUMN {DAB_TABLE}.`{col_name}` IS '{escaped}'")
+""")
 
-    spark.sql(f"""
-        ALTER TABLE {DAB_TABLE} SET TAGS (
-            'domain' = 'demand', 'layer' = 'analytical',
-            'source' = 'sap', 'history_model' = 'full_overwrite',
-            'data_classification' = 'internal'
-        )
-    """)
-    spark.sql(f"""
-        ALTER TABLE {DAB_TABLE} SET TBLPROPERTIES (
-            'business_owner' = 'Demand Planning',
-            'technical_owner' = 'Andre Causs',
-            'data_domain' = 'Demand Analytics',
-            'source_system' = 'SAP',
-            'refresh_frequency' = 'full_overwrite',
-            'natural_key' = 'numero_ordem_venda, item_ordem_venda',
-            'dab_metadata_version' = '{DAB_METADATA_VERSION}'
-        )
-    """)
-    print(f"Metadados versão {DAB_METADATA_VERSION} aplicados à tabela {DAB_TABLE}")
-else:
-    print(f"Metadados versão {DAB_METADATA_VERSION} já aplicados em {DAB_TABLE}; DDL ignorada.")
+print(f"Metadados aplicados à view {TABELA_DESTINO}")
