@@ -3,10 +3,6 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # 5.1 — Apuração da demanda
 # MAGIC
@@ -488,6 +484,194 @@ for aba in ABAS_2W:
 
     tabela_completa = "refined_demand_linha_HDA"
     _append(df_pivot, tabela_completa)
+
+# COMMAND ----------
+
+# DBTITLE 1,HDA Demanda Linha – Curva ABC
+from pyspark.sql import Window
+from pyspark.sql import functions as F
+from pyspark.sql.functions import to_date, lit
+from datetime import date
+from dateutil.relativedelta import relativedelta
+
+# ------------------------------------------------------------------------------
+# HDA - DEMANDA LINHA - CURVA ABC
+# ------------------------------------------------------------------------------
+# Agregação: item_principal_cadeia (família de produtos)
+# Operação: Contagem de linhas (pedidos) + classificação ABC dos últimos 6 meses
+# Centros: TTL, 0203, 0209, 0232 (cálculo ABC independente por aba)
+# Filtros: org_vendas='0200'
+# Saída: refined_demand_linha_abc_HDA
+# Colunas adicionais:
+#   sum_6m       - soma dos 6 meses fechados até a data de referência (ano/mes)
+#   part_perc    - participação de sum_6m no total da aba (fração 0-1)
+#   perc_acc     - participação acumulada, ordenada por sum_6m desc (fração 0-1)
+#   rank         - posição na ordenação (sum_6m desc, Item Principal Cadeia asc)
+#   classe_linha - E se sum_6m = 0; A <= 0,75; B <= 0,85; C <= 0,95; senão D
+# Layout final: file, sheet, Item Principal Cadeia, 6 últimos meses,
+#   sum_6m, part_perc, perc_acc, rank, classe_linha (meses anteriores removidos)
+# ------------------------------------------------------------------------------
+org_vendas = "0200"
+arquivo = _nome_arquivo(org_vendas, "Demanda Linha")
+
+# Últimos 6 meses fechados (formato yyyy/MM, igual às colunas do pivot)
+ref_date = date(ano, mes, 1)
+meses_6m = [(ref_date - relativedelta(months=i)).strftime("%Y/%m") for i in range(5, -1, -1)]
+print(f"Janela sum_6m: {meses_6m[0]} a {meses_6m[-1]}")
+
+df_base = df.filter((df.data >= to_date(lit(data_minima))) & (df.org_vendas == org_vendas))
+
+# Ordenação da curva ABC (desempate pelo item para resultado determinístico)
+ordem = [F.col("sum_6m").desc(), F.col("Item Principal Cadeia").asc()]
+w_ordem = Window.orderBy(*ordem)
+w_acum = Window.orderBy(*ordem).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+w_total = Window.partitionBy()
+
+# Processa cada aba e salva na mesma tabela
+for aba in ABAS_2W:
+    df_aba = df_base if aba == "TTL" else df_base.filter(df_base.centro_original == aba)
+    df_pivot = _pivot(df_aba, ["item_principal_cadeia"], operacao="contagem")
+    df_pivot = df_pivot.withColumn("file", lit(arquivo)).withColumn("sheet", lit(aba))
+    df_pivot = df_pivot.withColumnRenamed("item_principal_cadeia", "Item Principal Cadeia")
+    df_pivot = _reordenar(df_pivot, ["Item Principal Cadeia"])
+    cols_base = df_pivot.columns
+
+    # sum_6m: mês ausente no pivot conta como 0
+    cols_6m = [F.col(f"`{m}`") if m in cols_base else F.lit(0) for m in meses_6m]
+    df_pivot = df_pivot.withColumn("sum_6m", reduce(lambda a, b: a + b, cols_6m).cast("int"))
+
+    # Participação, acumulado e rank
+    total = F.sum("sum_6m").over(w_total)
+    df_pivot = (
+        df_pivot
+        .withColumn("_total", total)
+        .withColumn("part_perc", F.when(F.col("_total") > 0, F.col("sum_6m") / F.col("_total")).otherwise(F.lit(0.0)))
+        .withColumn("perc_acc", F.when(F.col("_total") > 0, F.sum("sum_6m").over(w_acum) / F.col("_total")).otherwise(F.lit(0.0)))
+        .withColumn("rank", F.row_number().over(w_ordem))
+        .withColumn(
+            "classe_linha",
+            F.when(F.col("sum_6m") == 0, "E")
+             .when(F.col("perc_acc") <= 0.75, "A")
+             .when(F.col("perc_acc") <= 0.85, "B")
+             .when(F.col("perc_acc") <= 0.95, "C")
+             .otherwise("D")
+        )
+        .withColumn("part_perc", F.round("part_perc", 8))
+        .withColumn("perc_acc", F.round("perc_acc", 8))
+        .drop("_total")
+    )
+    # Mantém apenas os 6 últimos meses (mês ausente no pivot sai como 0)
+    cols_meses = [F.col(f"`{m}`") if m in cols_base else F.lit(0).alias(m) for m in meses_6m]
+    df_pivot = df_pivot.select(
+        [F.col("file"), F.col("sheet"), F.col("`Item Principal Cadeia`")]
+        + cols_meses
+        + [F.col(c) for c in ["sum_6m", "part_perc", "perc_acc", "rank", "classe_linha"]]
+    )
+
+    tabela_completa = "refined_demand_linha_abc_HDA"
+    _append(df_pivot, tabela_completa)
+
+# COMMAND ----------
+
+# DBTITLE 1,Instalar openpyxl para exportação
+# openpyxl: necessário para gerar o .xlsx da Curva ABC (célula seguinte).
+# ATENÇÃO: %pip reinicia o Python; a célula de exportação é autocontida.
+%pip install openpyxl
+
+# COMMAND ----------
+
+# DBTITLE 1,Exportar HDA Demanda Linha ABC para Excel
+import os
+import re
+import tempfile
+
+import numpy as np
+import openpyxl
+from databricks.sdk import WorkspaceClient
+from pyspark.sql import functions as F
+
+# ------------------------------------------------------------------------------
+# EXPORTAÇÃO - HDA DEMANDA LINHA CURVA ABC (XLSX)
+# ------------------------------------------------------------------------------
+# Mesmo mecanismo do notebook 6.2_export_demand_to_xlsx:
+#   - uma aba por valor de 'sheet' (TTL primeiro, depois os centros)
+#   - colunas de controle file/sheet removidas das abas
+#   - workbook montado com openpyxl e enviado ao volume via Files API
+# Diferenças:
+#   - exporta apenas refined_demand_linha_abc_HDA
+#   - nome do arquivo recebe sufixo ' ABC' para não sobrescrever o
+#     arquivo 'Demanda Linha' gerado pelo 6.2
+#   - linhas ordenadas por rank (Delta não garante ordem)
+#   - não limpa o volume
+#   - autocontida: não depende das variáveis das células anteriores
+#     (o %pip da célula anterior reinicia o Python)
+# ------------------------------------------------------------------------------
+SCHEMA = "parts_hdbk_sandbox.pr_demand"
+VOLUME_PATH = "/Volumes/parts_hdbk_sandbox/_file_orchestrator/demand/01_apuracao_demanda/out"
+TABELA_ABC = f"{SCHEMA}.refined_demand_linha_abc_HDA"
+
+_GATILHOS_FORMULA = "=+-@\t\r"
+try:
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE as _CARACTERES_ILEGAIS
+except ImportError:
+    _CARACTERES_ILEGAIS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _valor_celula(v):
+    """Limpa caracteres ilegais e neutraliza fórmulas em textos."""
+    if v is None or isinstance(v, (bool, np.bool_)):
+        return bool(v) if v is not None else None
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        return float(v)
+    v = _CARACTERES_ILEGAIS.sub("", str(v))
+    return "'" + v if v and v[0] in _GATILHOS_FORMULA else v
+
+
+df_abc = spark.table(TABELA_ABC)
+arquivos = [r.file for r in df_abc.select("file").distinct().collect()]
+
+for nome_arquivo in arquivos:
+    nome_saida = f"{nome_arquivo} ABC"
+    if "/" in nome_saida or ".." in nome_saida:
+        raise ValueError(f"nome de arquivo inválido: {nome_saida!r}")
+    caminho = f"{VOLUME_PATH}/{nome_saida}.xlsx"
+
+    df_arq = df_abc.filter(F.col("file") == nome_arquivo)
+    abas = sorted(
+        [r.sheet for r in df_arq.select("sheet").distinct().collect()],
+        key=lambda s: (str(s).upper() != "TTL", str(s)),
+    )
+
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    resumo = []
+    for aba in abas:
+        pdf = (
+            df_arq.filter(F.col("sheet") == aba)
+            .orderBy("rank")
+            .drop("file", "sheet")
+            .toPandas()
+        )
+        planilha = workbook.create_sheet(str(aba)[:31])
+        planilha.append(list(pdf.columns))
+        for registro in pdf.itertuples(index=False, name=None):
+            planilha.append([_valor_celula(v) for v in registro])
+        resumo.append(f"{aba}={len(pdf)}")
+
+    descritor, temporario = tempfile.mkstemp(suffix=".xlsx")
+    os.close(descritor)
+    try:
+        workbook.save(temporario)
+        with open(temporario, "rb") as f:
+            WorkspaceClient().files.upload(caminho, f, overwrite=True)
+    finally:
+        if os.path.isfile(temporario):
+            os.remove(temporario)
+
+    print(f"[OK] {caminho}")
+    print(f"     {len(abas)} abas ({', '.join(resumo)} linhas)")
 
 # COMMAND ----------
 
