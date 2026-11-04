@@ -1,0 +1,351 @@
+{
+  "datasets": [
+    {
+      "name": "dataset1",
+      "displayName": "refined_forecast_enriched",
+      "config": {
+        "version": "1.1",
+        "source": "parts_hdbk_sandbox.pr_forecast.refined_forecast_enriched",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          },
+          {
+            "name": "forecast_cycle_label",
+            "expr": "DATE_FORMAT(`forecast_cycle`, 'yyyy/MM')",
+            "displayName": "Forecast Cycle"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "displayName": "Count",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all"
+          }
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "name": "page1",
+      "displayName": "New Page",
+      "layout": [
+        {
+          "widget": {
+            "name": "bar_chart1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "department",
+                      "expression": "`department`"
+                    },
+                    {
+                      "name": "forecast_month",
+                      "expression": "`forecast_month`"
+                    },
+                    {
+                      "name": "sum(forecast_qty)",
+                      "expression": "SUM(`forecast_qty`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Forecast Qty por Department",
+                  "fields": []
+                }
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "forecast_month",
+                  "scale": {
+                    "type": "categorical",
+                    "categorySize": {
+                      "type": "number-of-categories",
+                      "number": 6
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(forecast_qty)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "department",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 12,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_main_material",
+            "queries": [
+              {
+                "name": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_main_material",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "main_material",
+                      "expression": "`main_material`"
+                    },
+                    {
+                      "name": "main_material_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Main Material"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "main_material",
+                    "queryName": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_main_material"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_forecast_type",
+            "queries": [
+              {
+                "name": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_forecast_type",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "forecast_type",
+                      "expression": "`forecast_type`"
+                    },
+                    {
+                      "name": "forecast_type_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Forecast Type"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "forecast_type",
+                    "queryName": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_forecast_type"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_segment",
+            "queries": [
+              {
+                "name": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_segment",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "segment",
+                      "expression": "`segment`"
+                    },
+                    {
+                      "name": "segment_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Segment"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "segment",
+                    "queryName": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_segment"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_market",
+            "queries": [
+              {
+                "name": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_market",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "market",
+                      "expression": "`market`"
+                    },
+                    {
+                      "name": "market_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Market"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "market",
+                    "queryName": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_market"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_forecast_cycle",
+            "queries": [
+              {
+                "name": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_forecast_cycle_label",
+                "query": {
+                  "datasetName": "dataset1",
+                  "fields": [
+                    {
+                      "name": "forecast_cycle_label",
+                      "expression": "`forecast_cycle_label`"
+                    },
+                    {
+                      "name": "forecast_cycle_label_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Forecast Cycle",
+                  "fields": []
+                }
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "forecast_cycle_label",
+                    "queryName": "dashboards/01f1cbff5f3515f3887b1a21768cde55/datasets/01f1cbff5f431c86ad2dfb0ffd0584f5_forecast_cycle_label"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 0,
+            "width": 4,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}

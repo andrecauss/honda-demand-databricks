@@ -3,9 +3,7 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-
-# COMMAND ----------
-
+# DBTITLE 1,Célula 1
 # MAGIC %md
 # MAGIC # 6.2 — Exportação da demanda para Excel
 # MAGIC
@@ -526,3 +524,117 @@ else:
     print("✓ Nenhum erro detectado")
 print(f"\n📁 Local: {VOLUME_PATH}")
 print("\nℹ️  Os arquivos Excel estão prontos para compartilhamento.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Limpeza
+# ==============================================================================
+# LIMPEZA DE ZIPs EXISTENTES E CRIAÇÃO DE ARQUIVOS ZIP (HAB / HDA)
+# ==============================================================================
+# Remove quaisquer .zip da raiz do volume e cria dois arquivos ZIP agrupando
+# os .xlsx pelo prefixo do nome (HAB ou HDA).
+# ==============================================================================
+import zipfile
+
+print("\n" + "=" * 70)
+print("LIMPANDO ARQUIVOS ZIP EXISTENTES")
+print("=" * 70)
+
+zips_existentes = [
+    item for item in dbutils.fs.ls(VOLUME_PATH) if item.name.lower().endswith(".zip")
+]
+
+if not zips_existentes:
+    print("Nenhum .zip na raiz do volume — nada a remover.")
+else:
+    for item in zips_existentes:
+        dbutils.fs.rm(item.path)
+        print(f"[REMOVIDO] {item.name}")
+    print(f"\n[OK] {len(zips_existentes)} arquivos .zip removidos.")
+
+# ------------------------------------------------------------------------------
+# Agrupar os .xlsx por prefixo (HAB / HDA) e gerar um ZIP para cada grupo
+# ------------------------------------------------------------------------------
+print("\n" + "=" * 70)
+print("CRIANDO ARQUIVOS ZIP")
+print("=" * 70)
+
+# Caminho local do volume (Files API monta em /Volumes/...)
+volume_local = VOLUME_PATH  # já é /Volumes/...
+
+arquivos_xlsx = [
+    item for item in dbutils.fs.ls(VOLUME_PATH) if item.name.lower().endswith(".xlsx")
+]
+
+grupos = {"HAB": [], "HDA": []}
+for item in arquivos_xlsx:
+    nome = item.name
+    if nome.startswith("HAB"):
+        grupos["HAB"].append(nome)
+    elif nome.startswith("HDA"):
+        grupos["HDA"].append(nome)
+    else:
+        print(f"[AVISO] Arquivo ignorado (prefixo desconhecido): {nome}")
+
+for prefixo, arquivos in grupos.items():
+    if not arquivos:
+        print(f"\n[AVISO] Nenhum .xlsx encontrado para {prefixo} — ZIP não criado.")
+        continue
+
+    nome_zip = f"Historical_Demand_Datalake_{prefixo}.zip"
+    caminho_zip_local = os.path.join(tempfile.gettempdir(), nome_zip)
+    caminho_zip_volume = f"{VOLUME_PATH}/{nome_zip}"
+
+    with zipfile.ZipFile(caminho_zip_local, "w", zipfile.ZIP_DEFLATED) as zf:
+        for nome_xlsx in sorted(arquivos):
+            caminho_xlsx = f"{volume_local}/{nome_xlsx}"
+            zf.write(caminho_xlsx, arcname=nome_xlsx)
+
+    # Upload para o volume
+    with open(caminho_zip_local, "rb") as f:
+        WorkspaceClient().files.upload(caminho_zip_volume, f, overwrite=True)
+
+    # Limpar temporário
+    os.remove(caminho_zip_local)
+
+    tamanho_mb = os.path.getsize(caminho_zip_volume) if os.path.isfile(caminho_zip_volume) else None
+    print(f"\n[OK] {nome_zip}: {len(arquivos)} arquivos empacotados")
+    for a in sorted(arquivos):
+        print(f"     • {a}")
+
+print("\n" + "=" * 70)
+print("RESUMO")
+print("=" * 70)
+for prefixo in ["HAB", "HDA"]:
+    n = len(grupos[prefixo])
+    status = f"{n} arquivos" if n else "não criado"
+    print(f"  Historical_Demand_Datalake_{prefixo}.zip → {status}")
+print(f"\n📁 Local: {VOLUME_PATH}")
+
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+from datetime import datetime
+
+# Calcula o primeiro dia do mês máximo da demanda que acabamos de processar
+_max_month = (
+    spark.table(f"{SCHEMA}.refined_demand_aberta_HAB_TTL")
+    .select(F.max("month"))
+    .first()[0]
+)
+
+# Garante que seja o primeiro dia do mês
+if isinstance(_max_month, str):
+    _forecast_cycle = datetime.strptime(_max_month[:10], "%Y-%m-%d").replace(day=1).strftime("%Y-%m-%d")
+else:
+    _forecast_cycle = _max_month.replace(day=1).strftime("%Y-%m-%d")
+
+print(f"forecast_cycle definido como: {_forecast_cycle}")
+
+# Executa o notebook 2.1_previous_forecast passando o parâmetro
+dbutils.notebook.run(
+    "/Users/andre_causs@honda.com.br/Honda_Demand_Databricks/04_forecast/2.1_previous_forecast",
+    timeout_seconds=3600,
+    arguments={"forecast_cycle": _forecast_cycle},
+)

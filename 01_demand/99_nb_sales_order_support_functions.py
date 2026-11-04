@@ -19,7 +19,7 @@ from pyspark.sql import functions as F
 # Parâmetros
 TABELA = "parts_hdbk_sandbox.dt_sales_orders.raw_sales_order"
 ANO = 2026
-MES = 6
+MES = 10
 
 # Visualiza quantidade de registros que serão removidos
 df_validacao = spark.sql(f"""

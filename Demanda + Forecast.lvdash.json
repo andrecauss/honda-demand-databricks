@@ -1,0 +1,298 @@
+{
+  "datasets": [
+    {
+      "name": "07fb2388",
+      "displayName": "demand_analytical_base",
+      "config": {
+        "version": "1.1",
+        "source": "parts_hdbk_sandbox._agents_databases.demand_analytical_base",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a2ab11cf",
+      "displayName": "Material 11395K1ZJ11: Demanda Real + Forecasts (Julho, Agosto, Setembro)",
+      "queryLines": [
+        "WITH historico AS (\n",
+        "    SELECT \n",
+        "        DATE_TRUNC('MONTH', `data_ordem`) as mes,\n",
+        "        SUM(`quantidade`) as demanda_real,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_julho,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_agosto,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_setembro\n",
+        "    FROM `parts_hdbk_sandbox`.`_agents_databases`.`demand_analytical_base`\n",
+        "    WHERE 1=1\n",
+        "        AND (:material IS NULL OR item_principal_cadeia = :material)\n",
+        "        AND `data_ordem` >= '2024-10-01' \n",
+        "        AND `data_ordem` < '2026-10-01'\n",
+        "    GROUP BY DATE_TRUNC('MONTH', `data_ordem`)\n",
+        "),\n",
+        "forecast_jul AS (\n",
+        "    SELECT \n",
+        "        `forecast_month` as mes,\n",
+        "        CAST(NULL AS DOUBLE) as demanda_real,\n",
+        "        SUM(`forecast_qty`) as forecast_julho,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_agosto,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_setembro\n",
+        "    FROM `parts_hdbk_sandbox`.`_agents_databases`.`forecast_enriched`\n",
+        "    WHERE 1=1\n",
+        "        AND (:material IS NULL OR main_material = :material)\n",
+        "        AND `forecast_cycle` = '2026-07-01'\n",
+        "        AND `lag` <= 11\n",
+        "    GROUP BY `forecast_month`\n",
+        "),\n",
+        "forecast_ago AS (\n",
+        "    SELECT \n",
+        "        `forecast_month` as mes,\n",
+        "        CAST(NULL AS DOUBLE) as demanda_real,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_julho,\n",
+        "        SUM(`forecast_qty`) as forecast_agosto,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_setembro\n",
+        "    FROM `parts_hdbk_sandbox`.`_agents_databases`.`forecast_enriched`\n",
+        "    WHERE 1=1\n",
+        "        AND (:material IS NULL OR main_material = :material)\n",
+        "        AND `forecast_cycle` = '2026-08-01'\n",
+        "        AND `lag` <= 11\n",
+        "    GROUP BY `forecast_month`\n",
+        "),\n",
+        "forecast_set AS (\n",
+        "    SELECT \n",
+        "        `forecast_month` as mes,\n",
+        "        CAST(NULL AS DOUBLE) as demanda_real,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_julho,\n",
+        "        CAST(NULL AS DOUBLE) as forecast_agosto,\n",
+        "        SUM(`forecast_qty`) as forecast_setembro\n",
+        "    FROM `parts_hdbk_sandbox`.`_agents_databases`.`forecast_enriched`\n",
+        "    WHERE 1=1\n",
+        "        AND (:material IS NULL OR main_material = :material)\n",
+        "        AND `forecast_cycle` = '2026-09-01'\n",
+        "        AND `lag` <= 11\n",
+        "    GROUP BY `forecast_month`\n",
+        ")\n",
+        "SELECT mes, demanda_real, forecast_julho, forecast_agosto, forecast_setembro\n",
+        "FROM historico\n",
+        "UNION ALL\n",
+        "SELECT mes, demanda_real, forecast_julho, forecast_agosto, forecast_setembro\n",
+        "FROM forecast_jul\n",
+        "UNION ALL\n",
+        "SELECT mes, demanda_real, forecast_julho, forecast_agosto, forecast_setembro\n",
+        "FROM forecast_ago\n",
+        "UNION ALL\n",
+        "SELECT mes, demanda_real, forecast_julho, forecast_agosto, forecast_setembro\n",
+        "FROM forecast_set\n",
+        "ORDER BY mes"
+      ],
+      "parameters": [
+        {
+          "displayName": "Material",
+          "keyword": "material",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "H0615KRMC00"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "e53ad541",
+      "displayName": "Untitled Page",
+      "layout": [
+        {
+          "widget": {
+            "name": "f7695917",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a2ab11cf",
+                  "fields": [
+                    {
+                      "name": "mes",
+                      "expression": "`mes`"
+                    },
+                    {
+                      "name": "sum(demanda_real)",
+                      "expression": "SUM(`demanda_real`)"
+                    },
+                    {
+                      "name": "sum(forecast_julho)",
+                      "expression": "SUM(`forecast_julho`)"
+                    },
+                    {
+                      "name": "sum(forecast_agosto)",
+                      "expression": "SUM(`forecast_agosto`)"
+                    },
+                    {
+                      "name": "sum(forecast_setembro)",
+                      "expression": "SUM(`forecast_setembro`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Material 11395K1ZJ11: Demanda Real + Forecasts (Julho, Agosto, Setembro)",
+                  "fields": []
+                }
+              },
+              "version": 1,
+              "mark": {
+                "colors": [
+                  "#077A9D",
+                  "#FF3621",
+                  "#FFAB00",
+                  "#00A972"
+                ],
+                "layout": "layer"
+              },
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "mes",
+                  "format": {
+                    "type": "date",
+                    "date": "locale-short-month"
+                  },
+                  "displayName": "Mês",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "color": {
+                  "legend": {
+                    "position": "top"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(demanda_real)",
+                        "displayName": "Demanda Real"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "axis": {
+                      "title": "Quantidade"
+                    }
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(forecast_julho)",
+                        "displayName": "Forecast Jul/26"
+                      },
+                      {
+                        "fieldName": "sum(forecast_agosto)",
+                        "displayName": "Forecast Ago/26"
+                      },
+                      {
+                        "fieldName": "sum(forecast_setembro)",
+                        "displayName": "Forecast Set/26"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "axis": {
+                      "title": "Forecast"
+                    }
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "ebb098dc",
+      "displayName": "Filtros globais",
+      "layout": [
+        {
+          "widget": {
+            "name": "5215c6b4",
+            "spec": {
+              "encodings": {
+                "fields": []
+              },
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "frame": {
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}

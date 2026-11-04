@@ -1,0 +1,60 @@
+{
+  "datasets": [
+    {
+      "name": "60c09dfa",
+      "displayName": "refined_forecast_enriched",
+      "config": {
+        "version": "1.1",
+        "source": "parts_hdbk_sandbox.pr_forecast.refined_forecast_enriched",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Representa o número total de linhas no conjunto de dados. Use essa medida para contar todos",
+            "displayName": "Contagem"
+          }
+        ]
+      }
+    },
+    {
+      "name": "893a6458",
+      "displayName": "demand_analytical_base",
+      "config": {
+        "version": "1.1",
+        "source": "parts_hdbk_sandbox.pr_demand.demand_analytical_base",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Representa o número total de linhas no conjunto de dados. Use essa medida para contar todos",
+            "displayName": "Contagem"
+          }
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "name": "e9a461e9",
+      "displayName": "Página sem título",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}

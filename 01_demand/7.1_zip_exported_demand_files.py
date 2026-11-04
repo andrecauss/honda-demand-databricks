@@ -3,9 +3,6 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # 7.1 — Compactação dos arquivos de demanda
 # MAGIC

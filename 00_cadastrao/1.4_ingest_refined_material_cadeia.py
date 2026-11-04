@@ -4,10 +4,11 @@
 # environment_version = "5"
 # ///
 
+
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # 3.1 — Cadeia de materiais
+# MAGIC # 1.4 — Cadeia de materiais
 # MAGIC
 # MAGIC - **Propósito:** Definir o item principal da cadeia de substituição de cada material.
 # MAGIC - **Entrada:** `pr_cadastrao.material_cadastrao`
@@ -20,24 +21,28 @@
 from pyspark.sql import functions as F
 
 
-def clean_material_suffix(col, empresa_col):
+def clean_material_suffix(col, empresa_col, grupo_compradores_col):
     """
     Remove sufixo de letra (C/G) precedido de espaços conforme regra por empresa.
 
     Regras:
       - Empresa 0200: remove " C" (espaço(s) + C) no final
+        (somente se o grupo de compradores for diferente de "040"; NULL conta como diferente)
       - Empresa 0500: remove " C" ou " G" (espaço(s) + C/G) no final
 
     Args:
         col: Coluna Spark contendo o valor a ser limpo
         empresa_col: Coluna Spark contendo o código da empresa
+        grupo_compradores_col: Coluna Spark contendo o grupo de compradores
 
     Returns:
         Coluna Spark com sufixo removido conforme regra
     """
     return (
         F.when(
-            (empresa_col == "0200") & col.rlike(r".*\s+C$"),
+            (empresa_col == "0200")
+            & (F.coalesce(F.trim(grupo_compradores_col), F.lit("")) != "040")
+            & col.rlike(r".*\s+C$"),
             F.rtrim(F.regexp_replace(col, r"\s+C$", ""))
         ).when(
             (empresa_col == "0500") & col.rlike(r".*\s+[CG]$"),
@@ -52,7 +57,7 @@ def clean_material_suffix(col, empresa_col):
 # Regra: se NULL, vazio ou "sim", assume o próprio material
 df_cadeia = (
     spark.table("parts_hdbk_sandbox.pr_cadastrao.material_cadastrao")
-    .select("empresa", "material", "item_principal_cadeia")
+    .select("empresa", "material", "item_principal_cadeia", "grupo_de_compradores")
     .withColumn(
         "item_principal_cadeia",
         F.when(
@@ -70,9 +75,17 @@ df_cadeia = (
 
 # DBTITLE 1,Aplicar Limpeza de Sufixo
 # Aplicar limpeza de sufixo (" C" / " G") apenas no item_principal_cadeia
-df_cadeia = df_cadeia.withColumn(
-    "item_principal_cadeia",
-    clean_material_suffix(F.col("item_principal_cadeia"), F.col("empresa"))
+# grupo_de_compradores é usado apenas na regra e removido da saída
+df_cadeia = (
+    df_cadeia.withColumn(
+        "item_principal_cadeia",
+        clean_material_suffix(
+            F.col("item_principal_cadeia"),
+            F.col("empresa"),
+            F.col("grupo_de_compradores"),
+        )
+    )
+    .drop("grupo_de_compradores")
 )
 
 # Limpeza de sufixo aplicada
@@ -119,7 +132,7 @@ Atualizacao: Derivada da carga da material_cadastrao
 
 Regras de negocio aplicadas:
   - item_principal_cadeia NULL/vazio/sim -> assume o proprio material
-  - Empresa 0200: sufixo ' C' removido do item_principal_cadeia
+  - Empresa 0200: sufixo ' C' removido do item_principal_cadeia (exceto grupo de compradores 040)
   - Empresa 0500: sufixo ' C' ou ' G' removido do item_principal_cadeia
 
 Relacionamentos:
@@ -135,7 +148,7 @@ spark.sql(f"""
 COLUMN_COMMENTS = {
     "empresa": "Código da empresa SAP (ex: 0200=2W, 0500=4W). Parte da chave primária.",
     "material": "Código único do material/peça (partnumber SAP). Parte da chave primária.",
-    "item_principal_cadeia": "Material principal na cadeia de substituição. Quando NULL/vazio/sim na origem, assume o próprio material. Sufixos ' C'/' G' removidos conforme regra por empresa.",
+    "item_principal_cadeia": "Material principal na cadeia de substituição. Quando NULL/vazio/sim na origem, assume o próprio material. Sufixos ' C'/' G' removidos conforme regra por empresa (0200: apenas ' C', exceto grupo de compradores 040; 0500: ' C' ou ' G').",
 }
 
 for column_name, comment in COLUMN_COMMENTS.items():

@@ -1,18 +1,17 @@
 # Databricks notebook source
 # /// script
 # [tool.databricks.environment]
-# environment_version = "5"
+# environment_version = "6"
 # ///
-
-
-# COMMAND ----------
-
+# DBTITLE 1,5.2 — Base analítica de demanda
 # MAGIC %md
 # MAGIC # 5.2 — Base analítica de demanda
 # MAGIC
 # MAGIC - **Propósito:** Disponibilizar ordens de venda enriquecidas em uma base analítica unificada.
 # MAGIC - **Entradas:** `raw_sales_order`, `material_cadeia`, `knvv_sap` e `kna1_sap`
-# MAGIC - **Saída:** `_agents_databases.demand_analytical_base` (view)
+# MAGIC - **Saídas:**
+# MAGIC   - `_agents_databases.demand_analytical_base` (view principal)
+# MAGIC   - `pr_demand.demand_analytical_base` (view espelho)
 # MAGIC - **Granularidade:** Item da ordem de venda · **Carga:** Completa
 
 # COMMAND ----------
@@ -300,3 +299,43 @@ spark.sql(f"""
 """)
 
 print(f"Metadados aplicados à view {TABELA_DESTINO}")
+
+# COMMAND ----------
+
+# DBTITLE 1,View espelho em pr_demand
+# ==============================================================================
+# VIEW ESPELHO: pr_demand.demand_analytical_base
+# ==============================================================================
+# Cria view no schema pr_demand referenciando a view principal em _agents_databases.
+# Qualquer alteração na view principal é refletida automaticamente aqui.
+# ==============================================================================
+
+TABELA_ESPELHO = "parts_hdbk_sandbox.pr_demand.demand_analytical_base"
+
+# Remove a tabela física existente para permitir criação da view
+spark.sql(f"DROP TABLE IF EXISTS {TABELA_ESPELHO}")
+
+spark.sql(f"""
+    CREATE OR REPLACE VIEW {TABELA_ESPELHO}
+    COMMENT 'Espelho de _agents_databases.demand_analytical_base. {VIEW_COMMENT}'
+    AS SELECT * FROM {TABELA_DESTINO}
+""")
+
+# Aplica os mesmos comentários de coluna
+for col_name, comment in DAB_COLUMN_COMMENTS.items():
+    escaped = comment.replace("'", "''")
+    spark.sql(f"COMMENT ON COLUMN {TABELA_ESPELHO}.`{col_name}` IS '{escaped}'")
+
+spark.sql(f"""
+    ALTER VIEW {TABELA_ESPELHO} SET TBLPROPERTIES (
+        'business_owner' = 'Demand Planning',
+        'technical_owner' = 'Andre Causs',
+        'data_domain' = 'Demand Analytics',
+        'source_system' = 'SAP',
+        'natural_key' = 'numero_ordem_venda, item_ordem_venda',
+        'mirrors' = '{TABELA_DESTINO}'
+    )
+""")
+
+print(f"✓ View espelho {TABELA_ESPELHO} criada/atualizada.")
+print(f"  Referencia: {TABELA_DESTINO}")

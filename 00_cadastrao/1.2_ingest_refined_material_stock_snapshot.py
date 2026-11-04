@@ -8,151 +8,59 @@
 # MAGIC # 2.2 — Snapshot de estoque de materiais
 # MAGIC
 # MAGIC - **Propósito:** Registrar mensalmente estoques, quantidades e preços dos materiais.
-# MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
+# MAGIC - **Entrada:** `pr_cadastrao.material_cadastrao` (gerada pelo 1.1), incluindo a data de referência (`reference_date`)
 # MAGIC - **Saídas:** `pr_cadastrao.material_inventory_history` (tabela) e `_agents_databases.material_inventory_history` (view, sem colunas de auditoria)
 # MAGIC - **Chave:** Empresa + Material + Centro + Data de referência · **Carga:** Mensal, substituição atômica por centro
 
 # COMMAND ----------
 
-# DBTITLE 1,Guarda: verificar arquivos em current/
+# DBTITLE 1,Leitura da tabela material_cadastrao
 # ==============================================================================
-# GUARDA: VERIFICAR ARQUIVOS EM CURRENT/
+# LEITURA DA TABELA MATERIAL_CADASTRAO
 # ==============================================================================
-# Verifica a existência de arquivos Excel no diretório de entrada antes de
-# prosseguir. Encerra o notebook com exit code "NO_FILES" se vazio,
-# evitando execução desnecessária das células subsequentes.
-# ==============================================================================
-
-import os
-
-SOURCE_DIR = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/"
-
-files = [f for f in os.listdir(SOURCE_DIR) if f.lower().endswith((".xls", ".xlsx"))]
-
-if not files:
-    print("Nenhum arquivo Excel em current/. Encerrando sem processar.")
-    dbutils.notebook.exit("NO_FILES")
-else:
-    print(f"{len(files)} arquivo(s) detectado(s) em current/: {files}")
-
-# COMMAND ----------
-
-# DBTITLE 1,Função de Sanitização de Colunas
-# ------------------------------------------------------------------------------
-# FUNÇÃO AUXILIAR: SANITIZAÇÃO DE NOMES DE COLUNAS
-# ------------------------------------------------------------------------------
-# Necessária porque os arquivos Excel SAP contêm headers com acentuação
-# e espaços, incompatíveis com nomes de colunas Delta/Spark.
-# ------------------------------------------------------------------------------
-
-import re
-import unicodedata
-
-
-def sanitize_col_name(name):
-    """
-    Sanitiza nome de coluna para compatibilidade com Spark/Delta.
-
-    Remove acentos via normalização NFKD, converte para lowercase e
-    substitui caracteres inválidos por underscore.
-
-    Args:
-        name (str): Nome original da coluna (pode conter acentos,
-            espaços e caracteres especiais).
-
-    Returns:
-        str: Nome sanitizado em snake_case ASCII.
-
-    Example:
-        >>> sanitize_col_name("Preço de Venda Líquida")
-        'preco_de_venda_liquida'
-    """
-    if not name:
-        return "col_unknown"
-    nfkd = unicodedata.normalize('NFKD', name)
-    ascii_name = nfkd.encode('ASCII', 'ignore').decode('ASCII')
-    clean = re.sub(r'[^a-zA-Z0-9_]', '_', ascii_name)
-    clean = re.sub(r'_+', '_', clean).strip('_')
-    return clean.lower()
-
-# COMMAND ----------
-
-# DBTITLE 1,Leitura dos arquivos Excel (.xlsx)
-# ==============================================================================
-# LEITURA DOS ARQUIVOS EXCEL (.xlsx)
-# ==============================================================================
-# Carrega todos os arquivos Excel do diretório current/ com inferSchema
-# desabilitado (todas as colunas como STRING) para preservar zeros à
-# esquerda em códigos SAP. Extrai metadados de arquivo para rastreabilidade.
+# Única entrada do notebook: a tabela gerada pelo 1.1. A data de referência
+# vem da coluna reference_date (gravada pelo 1.1 a partir do nome dos
+# arquivos), sem consultar o volume. Encerra com "NO_DATA" se a tabela
+# estiver vazia e falha se houver mais de uma data de referência.
 # ==============================================================================
 
-df_raw = (spark.read
-    .format("excel")
-    .option("header", "true")
-    .option("inferSchema", "false")
-    .load("/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/")
-)
+from datetime import datetime
 
-print(f"Arquivos carregados: {len(df_raw.columns)} colunas")
+from pyspark.sql import functions as F
 
-source_file_names = [
-    row.file_name
-    for row in df_raw.selectExpr("_metadata.file_name AS file_name").distinct().collect()
-]
-print(f"Arquivos fonte detectados: {source_file_names}")
+CADASTRAO_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_cadastrao"
 
-# COMMAND ----------
+df = spark.table(CADASTRAO_TABLE)
 
-# DBTITLE 1,Tratamento de header e sanitização de colunas
-# ==============================================================================
-# TRATAMENTO DE HEADER E SANITIZAÇÃO DE COLUNAS
-# ==============================================================================
-# Quando múltiplos arquivos Excel são carregados, o reader pode não aplicar
-# o header corretamente (colunas _c0, _c1...). Este bloco detecta essa
-# situação, extrai nomes da primeira linha, sanitiza e remove linhas de
-# cabeçalho duplicadas provenientes de cada arquivo .xlsx.
-# ==============================================================================
-
-first_col = df_raw.columns[0]
-
-if first_col.startswith("_c"):
-    header_row = df_raw.first()
-    original_names = [header_row[i] if header_row[i] else f"col_{i}" for i in range(len(df_raw.columns))]
-    sanitized_names = [sanitize_col_name(n) for n in original_names]
-
-    seen = {}
-    for i, name in enumerate(sanitized_names):
-        if name in seen:
-            seen[name] += 1
-            sanitized_names[i] = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 0
-
-    df = df_raw.toDF(*sanitized_names)
-
-    header_values = [v for v in [header_row[0], header_row[1], header_row[2]] if v]
-    df = df.filter(
-        ~(
-            (df[sanitized_names[0]] == header_values[0]) &
-            (df[sanitized_names[1]] == header_values[1]) &
-            (df[sanitized_names[2]] == header_values[2])
-        )
+if "reference_date" not in df.columns:
+    raise RuntimeError(
+        f"{CADASTRAO_TABLE} não possui a coluna reference_date. "
+        "Execute a versão atual do notebook 1.1 antes deste."
     )
-else:
-    original_names = df_raw.columns
-    sanitized_names = [sanitize_col_name(n) for n in original_names]
 
-    seen = {}
-    for i, name in enumerate(sanitized_names):
-        if name in seen:
-            seen[name] += 1
-            sanitized_names[i] = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 0
+load_info = df.agg(
+    F.count(F.lit(1)).alias("rows"),
+    F.count_if(F.col("reference_date").isNull()).alias("null_ref"),
+    F.sort_array(F.collect_set("reference_date")).alias("ref_dates"),
+    F.sort_array(F.collect_set("_source_file_path")).alias("source_paths"),
+).first()
 
-    df = df_raw.toDF(*sanitized_names)
+if load_info["rows"] == 0:
+    print(f"{CADASTRAO_TABLE} está vazia. Encerrando sem processar.")
+    dbutils.notebook.exit("NO_DATA")
 
-print(f"DataFrame preparado: {len(df.columns)} colunas")
+if load_info["null_ref"] > 0 or len(load_info["ref_dates"]) != 1:
+    raise ValueError(
+        f"{CADASTRAO_TABLE} deve ter exatamente uma reference_date não nula. "
+        f"Encontradas: {load_info['ref_dates']} (nulas: {load_info['null_ref']})."
+    )
+
+_ref = load_info["ref_dates"][0]
+REFERENCE_DATE = datetime(_ref.year, _ref.month, 1)
+SOURCE_PATH = ", ".join(load_info["source_paths"])
+
+print(f"Entrada: {CADASTRAO_TABLE} ({len(df.columns)} colunas, {load_info['rows']} linhas)")
+print(f"Data de referência: {REFERENCE_DATE.strftime('%Y-%m-%d')}")
 
 # COMMAND ----------
 
@@ -164,29 +72,12 @@ print(f"DataFrame preparado: {len(df.columns)} colunas")
 # Operação: conversão de tipos, cálculo de estoque_total e substituição atômica dos centros processados
 # Proteções: chaves obrigatórias, conflito por chave e validação numérica
 # Saída: parts_hdbk_sandbox.pr_cadastrao.material_inventory_history
-# Nota: reference_date extraída do padrão CAD{centro}_{yyyy}.{MM}.xlsx
+# Nota: REFERENCE_DATE e SOURCE_PATH vêm de material_cadastrao (célula anterior)
 # ==============================================================================
 
-from pyspark.sql import functions as F
-from datetime import datetime
 import uuid
 
-SOURCE_PATH = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/"
 INVENTORY_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_inventory_history"
-
-# --- Extrair data de referência do nome dos arquivos ---
-ref_dates = set()
-for fname in source_file_names:
-    match = re.search(r'(\d{4})\.(\d{2})', fname)
-    if match:
-        ref_dates.add(datetime(int(match.group(1)), int(match.group(2)), 1))
-
-if not ref_dates:
-    raise ValueError(f"Não foi possível extrair data de referência dos arquivos: {source_file_names}")
-if len(ref_dates) > 1:
-    raise ValueError(f"Arquivos com datas diferentes na mesma carga: {ref_dates}")
-
-REFERENCE_DATE = ref_dates.pop()
 
 CURRENT_USER = spark.sql("SELECT current_user()").first()[0]
 LOAD_ID = str(uuid.uuid4())
@@ -400,7 +291,7 @@ try:
     spark.sql(f"ALTER TABLE {INVENTORY_TABLE} RENAME COLUMN stock_total TO estoque_total")
     print("Coluna migrada: stock_total → estoque_total")
 except Exception as _rename_err:
-    if "COLUMN_NOT_FOUND" in str(_rename_err) or "cannot find" in str(_rename_err).lower():
+    if "COLUMN_NOT_FOUND" in str(_rename_err) or "UNRESOLVED_COLUMN" in str(_rename_err) or "cannot find" in str(_rename_err).lower():
         pass  # coluna já renomeada ou tabela ainda não existe
     else:
         raise
@@ -543,7 +434,7 @@ Snapshot mensal de estoques e preços de materiais SAP.
 
 Modelo: Snapshot mensal substituível por data de referência, empresa e centro
 Chave: empresa + material + centro + reference_date
-Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
+Fonte: parts_hdbk_sandbox.pr_cadastrao.material_cadastrao (data de referência: coluna reference_date)
 """
 
 INVENTORY_COLUMN_COMMENTS = {
@@ -562,14 +453,14 @@ INVENTORY_COLUMN_COMMENTS = {
     "quantidade_em_bo": "Quantidade em Back Order (BO) - pedidos pendentes.",
     "preco_de_rede_price_de_venda_liquida": "Preço de venda líquida (rede).",
     "estoque_total": "Estoque total físico: soma de estoque livre, bloqueado, em trânsito, poder de terceiros e controle de qualidade.",
-    "reference_date": "Primeiro dia do mês de referência, extraído do nome do arquivo fonte.",
+    "reference_date": "Primeiro dia do mês de referência, herdado de material_cadastrao.reference_date.",
     "_ingested_at": "Data e hora da ingestão do snapshot.",
     "_ingested_by": "Usuário responsável pela execução da carga.",
     "_load_id": "Identificador único da execução da carga (UUID).",
     "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
 }
 
-METADATA_VERSION = "5"
+METADATA_VERSION = "7"
 table_properties = (
     spark.sql(f"DESCRIBE DETAIL {INVENTORY_TABLE}")
     .select("properties")

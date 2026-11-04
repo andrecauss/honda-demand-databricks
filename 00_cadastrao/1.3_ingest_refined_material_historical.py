@@ -3,165 +3,68 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
+# DBTITLE 1,Célula 1
 # MAGIC %md
-# MAGIC # 2.3 — Histórico de materiais (SCD2)
+# MAGIC # 1.3 — Histórico de materiais (SCD2)
 # MAGIC
 # MAGIC - **Propósito:** Manter o histórico das alterações do cadastro mestre de materiais.
-# MAGIC - **Entrada:** `pr_cadastrao/sap_cadastraorefinado/current`
+# MAGIC - **Entrada:** `pr_cadastrao.material_cadastrao` (gerada pelo 1.1, com `item_principal_cadeia` original do SAP e a data de referência em `reference_date`)
 # MAGIC - **Saídas:** `pr_cadastrao.material_spec_changes` (tabela) e `_agents_databases.material_spec_changes` (view, sem colunas de auditoria)
 # MAGIC - **Chave:** Empresa + Material · **Carga:** Mensal, SCD Type 2
+# MAGIC - **Campos rastreados:** intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra e `lead_time` (origem: `prazo_entrega_prevista_lead_time_firme`)
 
 # COMMAND ----------
 
-# DBTITLE 1,Guarda: verificar arquivos em current/
+# DBTITLE 1,Leitura da tabela material_cadastrao
 # ==============================================================================
-# GUARDA: VERIFICAR ARQUIVOS EM CURRENT/
+# LEITURA DA TABELA MATERIAL_CADASTRAO
 # ==============================================================================
-# Verifica a existência de arquivos Excel no diretório de entrada antes de
-# prosseguir. Encerra o notebook com exit code "NO_FILES" se vazio,
-# evitando execução desnecessária das células subsequentes.
-# ==============================================================================
-
-import os
-
-SOURCE_DIR = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/"
-
-files = [f for f in os.listdir(SOURCE_DIR) if f.lower().endswith((".xls", ".xlsx"))]
-
-if not files:
-    print("Nenhum arquivo Excel em current/. Encerrando sem processar.")
-    dbutils.notebook.exit("NO_FILES")
-else:
-    print(f"{len(files)} arquivo(s) detectado(s) em current/: {files}")
-
-# COMMAND ----------
-
-# DBTITLE 1,Função de Sanitização de Colunas
-# ------------------------------------------------------------------------------
-# FUNÇÃO AUXILIAR: SANITIZAÇÃO DE NOMES DE COLUNAS
-# ------------------------------------------------------------------------------
-# Necessária porque os arquivos Excel SAP contêm headers com acentuação
-# e espaços, incompatíveis com nomes de colunas Delta/Spark.
-# ------------------------------------------------------------------------------
-
-import re
-import unicodedata
-
-
-def sanitize_col_name(name):
-    """
-    Sanitiza nome de coluna para compatibilidade com Spark/Delta.
-
-    Remove acentos via normalização NFKD, converte para lowercase e
-    substitui caracteres inválidos por underscore.
-
-    Args:
-        name (str): Nome original da coluna (pode conter acentos,
-            espaços e caracteres especiais).
-
-    Returns:
-        str: Nome sanitizado em snake_case ASCII.
-
-    Example:
-        >>> sanitize_col_name("Preço de Venda Líquida")
-        'preco_de_venda_liquida'
-    """
-    if not name:
-        return "col_unknown"
-    # Remover acentos via normalização Unicode NFKD
-    nfkd = unicodedata.normalize('NFKD', name)
-    ascii_name = nfkd.encode('ASCII', 'ignore').decode('ASCII')
-    # Substituir caracteres inválidos por underscore
-    clean = re.sub(r'[^a-zA-Z0-9_]', '_', ascii_name)
-    # Remover underscores consecutivos e nas pontas
-    clean = re.sub(r'_+', '_', clean).strip('_')
-    return clean.lower()
-
-# COMMAND ----------
-
-# DBTITLE 1,Leitura dos arquivos Excel (.xlsx)
-# ==============================================================================
-# LEITURA DOS ARQUIVOS EXCEL (.xlsx)
-# ==============================================================================
-# Carrega todos os arquivos Excel do diretório current/ com inferSchema
-# desabilitado (todas as colunas como STRING) para preservar zeros à
-# esquerda em códigos SAP (ex: material "001234", empresa "0200").
-# Extrai metadados de arquivo para determinar data de referência.
+# Única entrada do notebook: a tabela gerada pelo 1.1, que mantém
+# item_principal_cadeia com o valor original do SAP (SIM/nulo), igual ao
+# histórico SCD2 existente. A data de referência vem da coluna reference_date
+# (gravada pelo 1.1 a partir do nome dos arquivos), sem consultar o volume.
+# Encerra com "NO_DATA" se a tabela estiver vazia e falha se houver mais de
+# uma data de referência.
 # ==============================================================================
 
-df_raw = (spark.read
-    .format("excel")
-    .option("header", "true")
-    .option("inferSchema", "false")
-    .load("/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/")
-)
+import uuid
+from datetime import datetime
 
-print(f"Arquivos carregados: {len(df_raw.columns)} colunas, {df_raw.count()} linhas (incluindo possíveis headers duplicados)")
+from pyspark.sql import functions as F
 
-# Extrair nomes de arquivo da origem para determinar data de referência do snapshot
-source_file_names = [
-    row.file_name
-    for row in df_raw.selectExpr("_metadata.file_name AS file_name").distinct().collect()
-]
-print(f"Arquivos fonte detectados: {source_file_names}")
+CADASTRAO_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_cadastrao"
 
-# COMMAND ----------
+df = spark.table(CADASTRAO_TABLE)
 
-# DBTITLE 1,Tratamento de header e sanitização de colunas
-# ==============================================================================
-# TRATAMENTO DE HEADER E SANITIZAÇÃO DE COLUNAS
-# ==============================================================================
-# Quando múltiplos arquivos Excel são carregados, o reader pode não aplicar
-# o header corretamente (colunas _c0, _c1...). Este bloco detecta essa
-# situação, extrai nomes da primeira linha, sanitiza e remove linhas de
-# cabeçalho duplicadas provenientes de cada arquivo .xlsx.
-# ==============================================================================
-
-first_col = df_raw.columns[0]
-
-if first_col.startswith("_c"):
-    # Header não foi aplicado - extrair nomes da primeira linha e renomear
-    header_row = df_raw.first()
-    original_names = [header_row[i] if header_row[i] else f"col_{i}" for i in range(len(df_raw.columns))]
-    sanitized_names = [sanitize_col_name(n) for n in original_names]
-
-    # Tratar duplicatas adicionando sufixo incremental
-    seen = {}
-    for i, name in enumerate(sanitized_names):
-        if name in seen:
-            seen[name] += 1
-            sanitized_names[i] = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 0
-
-    df = df_raw.toDF(*sanitized_names)
-
-    # Remover linhas de cabeçalho de TODOS os arquivos (cada .xlsx carrega seu próprio header)
-    header_values = [v for v in [header_row[0], header_row[1], header_row[2]] if v]
-    df = df.filter(
-        ~(
-            (df[sanitized_names[0]] == header_values[0]) &
-            (df[sanitized_names[1]] == header_values[1]) &
-            (df[sanitized_names[2]] == header_values[2])
-        )
+if "reference_date" not in df.columns:
+    raise RuntimeError(
+        f"{CADASTRAO_TABLE} não possui a coluna reference_date. "
+        "Execute a versão atual do notebook 1.1 antes deste."
     )
-else:
-    # Header aplicado - apenas sanitizar os nomes existentes
-    original_names = df_raw.columns
-    sanitized_names = [sanitize_col_name(n) for n in original_names]
 
-    seen = {}
-    for i, name in enumerate(sanitized_names):
-        if name in seen:
-            seen[name] += 1
-            sanitized_names[i] = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 0
+load_info = df.agg(
+    F.count(F.lit(1)).alias("rows"),
+    F.count_if(F.col("reference_date").isNull()).alias("null_ref"),
+    F.sort_array(F.collect_set("reference_date")).alias("ref_dates"),
+    F.sort_array(F.collect_set("_source_file_path")).alias("source_paths"),
+).first()
 
-    df = df_raw.toDF(*sanitized_names)
+if load_info["rows"] == 0:
+    print(f"{CADASTRAO_TABLE} está vazia. Encerrando sem processar.")
+    dbutils.notebook.exit("NO_DATA")
 
-print(f"DataFrame final: {df.count()} linhas, {len(df.columns)} colunas")
-print(f"Primeiras colunas: {df.columns[:10]}")
+if load_info["null_ref"] > 0 or len(load_info["ref_dates"]) != 1:
+    raise ValueError(
+        f"{CADASTRAO_TABLE} deve ter exatamente uma reference_date não nula. "
+        f"Encontradas: {load_info['ref_dates']} (nulas: {load_info['null_ref']})."
+    )
+
+_ref = load_info["ref_dates"][0]
+REFERENCE_DATE = datetime(_ref.year, _ref.month, 1)
+SOURCE_PATH = ", ".join(load_info["source_paths"])
+
+print(f"Entrada: {CADASTRAO_TABLE} ({len(df.columns)} colunas, {load_info['rows']} linhas)")
+print(f"Data de referência: {REFERENCE_DATE.strftime('%Y-%m-%d')}")
 
 # COMMAND ----------
 
@@ -187,6 +90,7 @@ print(f"Primeiras colunas: {df.columns[:10]}")
 #     • cadeia
 #     • modelo_comercial_principal
 #     • status_compra
+#     • lead_time (origem: prazo_entrega_prevista_lead_time_firme)
 #
 # REGRAS DE CONTROLE TEMPORAL:
 #   • Carga inicial (tabela vazia): start_date = 1900-01-01 (sentinel)
@@ -216,16 +120,15 @@ print("✓ Escopo de campos SCD2 documentado.")
 # O resultado é persistido como temp view "vw_material_spec_changes_stage".
 # ==============================================================================
 
-from pyspark.sql import functions as F
-import uuid
-
-SOURCE_PATH = "/Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/"
+# REFERENCE_DATE, SOURCE_PATH e imports (F, uuid, datetime) vêm da célula
+# "Leitura da tabela material_cadastrao".
 MAIN_TABLE = "parts_hdbk_sandbox.pr_cadastrao.material_spec_changes"
 AGENTS_TABLE = "parts_hdbk_sandbox._agents_databases.material_spec_changes"
 
 BUSINESS_KEY_COLUMNS = ["empresa", "material"]
 SOURCE_CONTEXT_COLUMNS = ["centro"]
 MATERIAL_TYPE_COLUMN = "tipo_de_material"
+LEAD_TIME_SOURCE_COLUMN = "prazo_entrega_prevista_lead_time_firme"
 TRACKED_COLUMNS = [
     "intercambiabilidade",
     "item_principal_cadeia",
@@ -235,13 +138,15 @@ TRACKED_COLUMNS = [
     "cadeia",
     "modelo_comercial_principal",
     "status_compra",
+    "lead_time",
 ]
 INCLUDED_SOURCE_COLUMNS = BUSINESS_KEY_COLUMNS + TRACKED_COLUMNS
 REQUIRED_SOURCE_COLUMNS = (
     BUSINESS_KEY_COLUMNS
     + SOURCE_CONTEXT_COLUMNS
     + [MATERIAL_TYPE_COLUMN]
-    + TRACKED_COLUMNS
+    + [column for column in TRACKED_COLUMNS if column != "lead_time"]
+    + [LEAD_TIME_SOURCE_COLUMN]
 )
 TECHNICAL_COLUMNS = [
     "row_hash",
@@ -261,32 +166,26 @@ missing_columns = [column for column in REQUIRED_SOURCE_COLUMNS if column not in
 if missing_columns:
     raise ValueError(f"Colunas obrigatórias ausentes no DataFrame sanitizado: {missing_columns}")
 
-from datetime import datetime
-
 CURRENT_USER = spark.sql("SELECT current_user()").first()[0]
 LOAD_MODE = "scd2_hash"
 LOAD_ID = str(uuid.uuid4())
 LOAD_TS = spark.sql("SELECT from_utc_timestamp(current_timestamp(), 'America/Sao_Paulo') AS load_ts").first()["load_ts"]
 SENTINEL_DATE = datetime(1900, 1, 1, 0, 0, 0)
 
-# Extrair data de referência do snapshot a partir do nome dos arquivos
-# Padrão esperado: CAD{centro}_{yyyy}.{MM}.xls → primeiro dia do mês
-import re
-ref_dates = set()
-for fname in source_file_names:
-    match = re.search(r'(\d{4})\.(\d{2})', fname)
-    if match:
-        ref_dates.add(datetime(int(match.group(1)), int(match.group(2)), 1))
-
-if not ref_dates:
-    raise ValueError(f"Não foi possível extrair data de referência dos arquivos: {source_file_names}")
-if len(ref_dates) > 1:
-    raise ValueError(
-        f"Arquivos com datas de referência diferentes na mesma carga: {ref_dates}. "
-        "Todos os arquivos devem ser do mesmo mês."
-    )
-
-REFERENCE_DATE = ref_dates.pop()
+# --- Guarda: impedir carga retroativa (fora de ordem cronológica) ----------
+if spark.catalog.tableExists(MAIN_TABLE):
+    _max_start = spark.sql(f"""
+        SELECT MAX(start_date) AS max_sd
+        FROM {MAIN_TABLE}
+        WHERE is_current = TRUE
+    """).first()["max_sd"]
+    if _max_start and REFERENCE_DATE <= _max_start:
+        raise ValueError(
+            f"Carga retroativa bloqueada: REFERENCE_DATE ({REFERENCE_DATE.strftime('%Y-%m-%d')}) "
+            f"<= max start_date vigente ({_max_start}). "
+            f"Os snapshots devem ser carregados em ordem cronológica crescente."
+        )
+    print(f"✓ Guarda cronológica: REFERENCE_DATE ({REFERENCE_DATE.strftime('%Y-%m-%d')}) > max vigente ({_max_start})")
 
 is_initial_load = (
     not spark.catalog.tableExists(MAIN_TABLE)
@@ -312,8 +211,54 @@ normalized_source_df = df_filtered.select(
     *[
         F.trim(F.col(column).cast("string")).alias(column)
         for column in REQUIRED_SOURCE_COLUMNS
-    ]
+        if column != LEAD_TIME_SOURCE_COLUMN
+    ],
+    F.trim(F.col(LEAD_TIME_SOURCE_COLUMN).cast("string")).alias("lead_time"),
 )
+
+# --- Validação e normalização de datas SAP ---------------------------------
+# Detecta valores fora do padrão DD.MM.YYYY (ex: M/D/YY de exportações
+# com locale en-US) e normaliza automaticamente. Previne incidentes como
+# o de abril/2026 onde o arquivo fonte veio com formatação americana.
+# ---------------------------------------------------------------------------
+SAP_DATE_REGEX = r'^\d{2}\.\d{2}\.\d{4}$'
+SAP_NULL_DATE = '00.00.0000'
+DATE_COLUMNS = ['cut_in_material', 'cut_off_material', 'data_cadeia']
+
+for _col_name in DATE_COLUMNS:
+    _non_conforming = normalized_source_df.filter(
+        F.col(_col_name).isNotNull()
+        & (F.col(_col_name) != SAP_NULL_DATE)
+        & (~F.col(_col_name).rlike(SAP_DATE_REGEX))
+    ).count()
+
+    if _non_conforming > 0:
+        print(
+            f"⚠ {_col_name}: {_non_conforming:,} valores com formato não-SAP "
+            f"detectados. Normalizando M/D/YY → DD.MM.YYYY..."
+        )
+        normalized_source_df = normalized_source_df.withColumn(
+            _col_name,
+            F.when(
+                F.col(_col_name).isNotNull()
+                & (F.col(_col_name) != SAP_NULL_DATE)
+                & (~F.col(_col_name).rlike(SAP_DATE_REGEX)),
+                # to_date('M/d/yy') mapeia tudo para 20XX;
+                # anos > 2029 pertencem ao século 19 → subtrair 1200 meses
+                F.when(
+                    F.year(F.to_date(F.col(_col_name), 'M/d/yy')) > 2029,
+                    F.date_format(
+                        F.add_months(F.to_date(F.col(_col_name), 'M/d/yy'), -1200),
+                        'dd.MM.yyyy',
+                    ),
+                ).otherwise(
+                    F.date_format(F.to_date(F.col(_col_name), 'M/d/yy'), 'dd.MM.yyyy')
+                ),
+            ).otherwise(F.col(_col_name)),
+        )
+        print(f"  ✓ {_col_name}: normalização concluída.")
+    else:
+        print(f"✓ {_col_name}: formato SAP (DD.MM.YYYY) OK.")
 
 hash_expression = F.sha2(
     F.concat_ws(
@@ -366,7 +311,6 @@ stage_df = (
     .withColumn("_load_type", F.lit(LOAD_MODE))
     .withColumn("_load_id", F.lit(LOAD_ID))
     .withColumn("_source_file_path", F.lit(SOURCE_PATH))
-    .dropDuplicates(BUSINESS_KEY_COLUMNS + ["row_hash"])
     .select(*TARGET_COLUMNS)
 )
 
@@ -416,6 +360,7 @@ def ensure_scd2_table(target_table: str) -> None:
             cadeia STRING,
             modelo_comercial_principal STRING,
             status_compra STRING,
+            lead_time STRING,
             row_hash STRING,
             start_date TIMESTAMP,
             end_date TIMESTAMP,
@@ -448,6 +393,31 @@ def apply_scd2_merge(target_table: str) -> None:
         Exibe sumário de registros processados no console.
     """
     ensure_scd2_table(target_table)
+
+    # --- Guarda anti-duplicata: rejeitar reprocessamento do mesmo snapshot ---
+    # Se já existem registros vigentes com o mesmo start_date, o snapshot
+    # deste período já foi carregado. Bloqueia para evitar duplicatas como
+    # o incidente de maio/2026 (176k registros duplicados por re-execução).
+    # Para reprocessar, remova os registros do período antes de re-executar.
+    # -----------------------------------------------------------------------
+    _existing_for_period = spark.sql(f"""
+        SELECT COUNT(*) AS cnt
+        FROM {target_table}
+        WHERE start_date = TIMESTAMP '{REFERENCE_DATE.strftime("%Y-%m-%d %H:%M:%S.%f")}'
+          AND is_current = TRUE
+    """).first()["cnt"]
+
+    if _existing_for_period > 0:
+        raise ValueError(
+            f"Guarda anti-duplicata: já existem {_existing_for_period:,} registros "
+            f"vigentes com start_date = {REFERENCE_DATE.strftime('%Y-%m-%d')} "
+            f"em {target_table}. O snapshot deste período já foi carregado. "
+            f"Para reprocessar, remova os registros deste período primeiro."
+        )
+    print(
+        f"✓ Guarda anti-duplicata: nenhum registro vigente com "
+        f"start_date = {REFERENCE_DATE.strftime('%Y-%m-%d')}"
+    )
 
     changed_candidates = spark.sql(f"""
         SELECT COUNT(*) AS total
@@ -514,9 +484,12 @@ def apply_scd2_merge(target_table: str) -> None:
           )
     """)
 
+    target_cols = ', '.join(TARGET_COLUMNS)
+    source_cols = ', '.join([f'source.{c}' for c in TARGET_COLUMNS])
+
     spark.sql(f"""
-        INSERT INTO {target_table}
-        SELECT source.*
+        INSERT INTO {target_table} ({target_cols})
+        SELECT {source_cols}
         FROM vw_material_spec_changes_stage source
         LEFT ANTI JOIN {target_table} target
             ON target.empresa = source.empresa
@@ -542,6 +515,130 @@ def apply_scd2_merge(target_table: str) -> None:
 
 apply_scd2_merge(MAIN_TABLE)
 print(f"Carga SCD2 concluída na tabela principal: {MAIN_TABLE}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Migrar base existente para lead_time
+# ------------------------------------------------------------------------------
+# MIGRAR BASE EXISTENTE PARA LEAD_TIME
+# ------------------------------------------------------------------------------
+# Evolui o schema histórico para incluir a coluna lead_time e faz backfill
+# dos registros vigentes a partir do snapshot atual, sem criar versões SCD2
+# artificiais somente por causa da mudança de modelagem.
+# ------------------------------------------------------------------------------
+
+lead_time_comment = (
+    "Prazo de entrega prevista (lead time firme) do material no snapshot SAP. "
+    "Origem: coluna prazo_entrega_prevista_lead_time_firme."
+)
+
+# Backfill somente quando a coluna acabou de ser criada. Nas cargas mensais
+# seguintes a célula é no-op, para não sobrescrever a auditoria (_load_type,
+# _load_id) dos registros vigentes gravados pelo merge SCD2.
+lead_time_added = "lead_time" not in spark.table(MAIN_TABLE).columns
+
+if lead_time_added:
+    spark.sql(
+        f"ALTER TABLE {MAIN_TABLE} ADD COLUMNS (lead_time STRING COMMENT '{lead_time_comment}')"
+    )
+    print(f"✓ Coluna lead_time adicionada em {MAIN_TABLE}")
+else:
+    print(f"✓ Coluna lead_time já existe em {MAIN_TABLE}; backfill ignorado (no-op).")
+
+if lead_time_added:
+  recalc_summary_df = spark.sql(f"""
+    WITH stage AS (
+        SELECT
+            empresa,
+            material,
+            lead_time,
+            sha2(
+                concat_ws(
+                    '||',
+                    coalesce(intercambiabilidade, '<NULL>'),
+                    coalesce(item_principal_cadeia, '<NULL>'),
+                    coalesce(data_cadeia, '<NULL>'),
+                    coalesce(cut_in_material, '<NULL>'),
+                    coalesce(cut_off_material, '<NULL>'),
+                    coalesce(cadeia, '<NULL>'),
+                    coalesce(modelo_comercial_principal, '<NULL>'),
+                    coalesce(status_compra, '<NULL>'),
+                    coalesce(lead_time, '<NULL>')
+                ),
+                256
+            ) AS recomputed_row_hash
+        FROM vw_material_spec_changes_stage
+    )
+    SELECT
+        COUNT(*) AS current_rows_matched_to_stage,
+        SUM(CASE WHEN COALESCE(stage.lead_time, '') <> '' THEN 1 ELSE 0 END) AS current_rows_with_lead_time,
+        SUM(CASE WHEN COALESCE(target.lead_time, '') <> COALESCE(stage.lead_time, '') THEN 1 ELSE 0 END) AS rows_with_lead_time_delta,
+        SUM(CASE WHEN target.row_hash <> stage.recomputed_row_hash THEN 1 ELSE 0 END) AS rows_with_recomputed_hash_delta
+    FROM {MAIN_TABLE} target
+    INNER JOIN stage
+        ON target.empresa = stage.empresa
+       AND target.material = stage.material
+    WHERE target.is_current = TRUE
+""")
+
+  print("Resumo da reavaliação da base vigente:")
+  display(recalc_summary_df)
+
+  spark.sql(f"""
+    MERGE INTO {MAIN_TABLE} AS target
+    USING (
+        SELECT
+            empresa,
+            material,
+            lead_time,
+            sha2(
+                concat_ws(
+                    '||',
+                    coalesce(intercambiabilidade, '<NULL>'),
+                    coalesce(item_principal_cadeia, '<NULL>'),
+                    coalesce(data_cadeia, '<NULL>'),
+                    coalesce(cut_in_material, '<NULL>'),
+                    coalesce(cut_off_material, '<NULL>'),
+                    coalesce(cadeia, '<NULL>'),
+                    coalesce(modelo_comercial_principal, '<NULL>'),
+                    coalesce(status_compra, '<NULL>'),
+                    coalesce(lead_time, '<NULL>')
+                ),
+                256
+            ) AS recomputed_row_hash
+        FROM vw_material_spec_changes_stage
+    ) AS source
+        ON target.empresa = source.empresa
+       AND target.material = source.material
+       AND target.is_current = TRUE
+    WHEN MATCHED THEN UPDATE SET
+        target.lead_time = source.lead_time,
+        target.row_hash = source.recomputed_row_hash,
+        target._last_updated_at = TIMESTAMP '{LOAD_TS.strftime("%Y-%m-%d %H:%M:%S.%f")}',
+        target._ingested_by = '{CURRENT_USER}',
+        target._load_type = 'schema_evolution_lead_time',
+        target._load_id = '{LOAD_ID}',
+        target._source_file_path = '{SOURCE_PATH}'
+""")
+
+  print(f"✓ Registros vigentes atualizados com lead_time em {MAIN_TABLE}")
+
+  display(
+    spark.sql(f"""
+        SELECT
+            empresa,
+            material,
+            lead_time,
+            is_current,
+            start_date,
+            end_date
+        FROM {MAIN_TABLE}
+        WHERE is_current = TRUE
+        ORDER BY empresa, material
+        LIMIT 5
+    """)
+  )
+
 
 # COMMAND ----------
 
@@ -574,7 +671,7 @@ spark.sql(f"""
         empresa, material,
         intercambiabilidade, item_principal_cadeia, data_cadeia,
         cut_in_material, cut_off_material, cadeia,
-        modelo_comercial_principal, status_compra,
+        modelo_comercial_principal, status_compra, lead_time,
         row_hash, start_date, end_date, is_current
     FROM {MAIN_TABLE}
 """)
@@ -600,8 +697,8 @@ Modelo: Slowly Changing Dimension Type 2 com Hash Comparison
 Chave de negócio: empresa + material
 Campos rastreados: intercambiabilidade, item_principal_cadeia, data_cadeia,
     cut_in_material, cut_off_material, cadeia, modelo_comercial_principal,
-    status_compra
-Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
+    status_compra, lead_time
+Fonte: parts_hdbk_sandbox.pr_cadastrao.material_cadastrao (data de referência: coluna reference_date)
 """
 
 SCD2_COLUMN_COMMENTS = {
@@ -615,6 +712,7 @@ SCD2_COLUMN_COMMENTS = {
     "cadeia": "Identificador da cadeia de substituição.",
     "modelo_comercial_principal": "Modelo comercial principal associado ao material.",
     "status_compra": "Status de compra do material no SAP.",
+    "lead_time": "Prazo de entrega prevista (lead time firme) do material no snapshot SAP.",
     "row_hash": "SHA-256 dos campos rastreados para detecção de mudanças (SCD2).",
     "start_date": "Data de início da versão (SCD2). Sentinel 1900-01-01 na carga inicial.",
     "end_date": "Data de encerramento da versão (SCD2). NULL se vigente.",
@@ -624,10 +722,10 @@ SCD2_COLUMN_COMMENTS = {
     "_ingested_by": "Usuário responsável pela execução da carga.",
     "_load_type": "Tipo de carga executada (ex: scd2_hash).",
     "_load_id": "Identificador único da execução da carga (UUID).",
-    "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
+    "_source_file_path": "Diretório dos arquivos SAP que definem a data de referência da carga (dados lidos de pr_cadastrao.material_cadastrao).",
 }
 
-METADATA_VERSION = "1"
+METADATA_VERSION = "4"
 table_properties = (
     spark.sql(f"DESCRIBE DETAIL {MAIN_TABLE}")
     .select("properties")
@@ -772,6 +870,7 @@ COLUMN_COMMENTS = {
     "cadeia": "Código da cadeia de substituição. Campo rastreado por SCD2.",
     "modelo_comercial_principal": "Modelo comercial principal do material. Campo rastreado por SCD2.",
     "status_compra": "Status de compra do material no SAP. Campo rastreado por SCD2.",
+    "lead_time": "Prazo de entrega prevista (lead time firme) do material no snapshot SAP. Campo rastreado por SCD2.",
 
     # --- Controle SCD2 ---
     "row_hash": "Hash SHA-256 das colunas rastreadas, usado para detectar mudanças sem comparar campo a campo.",
@@ -785,7 +884,7 @@ COLUMN_COMMENTS = {
     "_ingested_by": "Usuário responsável pela execução da carga.",
     "_load_type": "Tipo de carga executada para a tabela histórica.",
     "_load_id": "Identificador único da execução da carga (UUID).",
-    "_source_file_path": "Caminho do diretório fonte dos arquivos ingeridos.",
+    "_source_file_path": "Diretório dos arquivos SAP que definem a data de referência da carga (dados lidos de pr_cadastrao.material_cadastrao).",
 }
 
 # =============================================================================
@@ -797,9 +896,9 @@ Camada Refined do histórico de cadastro de materiais SAP.
 Modelo: Slowly Changing Dimension Type 2 (SCD2)
 Chave de negócio: empresa + material
 Detecção de mudança: Hash Comparison (SHA-256)
-Campos rastreados: intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra
+Campos rastreados: intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra, lead_time
 Atualização: append histórico quando houver mudança nos campos rastreados ou quando a chave aparecer pela primeira vez; encerramento lógico do registro vigente quando a chave deixar de aparecer no novo snapshot
-Fonte: /Volumes/parts_hdbk_sandbox/pr_cadastrao/sap_cadastraorefinado/current/
+Fonte: parts_hdbk_sandbox.pr_cadastrao.material_cadastrao (data de referência: coluna reference_date)
 """
 
 if not _metadata_already_applied:
@@ -841,7 +940,7 @@ if not _metadata_already_applied:
             'source_system' = 'SAP',
             'refresh_frequency' = 'monthly_scd2',
             'natural_key' = 'empresa, material',
-            'tracked_columns' = 'intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra'
+            'tracked_columns' = 'intercambiabilidade, item_principal_cadeia, data_cadeia, cut_in_material, cut_off_material, cadeia, modelo_comercial_principal, status_compra, lead_time'
         )
     """)
 

@@ -4,7 +4,7 @@
 # environment_version = "5"
 # ///
 # MAGIC %md
-# MAGIC # 5.1 — Apuração da demanda
+# MAGIC # 3.1 — Apuração da demanda
 # MAGIC
 # MAGIC - **Propósito:** Consolidar a demanda histórica em visões para planejamento e exportação.
 # MAGIC - **Entradas:** `dt_sales_orders.raw_sales_order`, `material_cadeia`, `knvv_sap` e `kna1_sap`
@@ -504,8 +504,8 @@ from dateutil.relativedelta import relativedelta
 # Saída: refined_demand_linha_abc_HDA
 # Colunas adicionais:
 #   sum_6m       - soma dos 6 meses fechados até a data de referência (ano/mes)
-#   part_perc    - participação de sum_6m no total da aba (fração 0-1)
-#   perc_acc     - participação acumulada, ordenada por sum_6m desc (fração 0-1)
+#   part_perc    - participação de sum_6m no total da aba (fração 0-1, sem arredondamento)
+#   perc_acc     - participação acumulada, ordenada por sum_6m desc (fração 0-1, sem arredondamento)
 #   rank         - posição na ordenação (sum_6m desc, Item Principal Cadeia asc)
 #   classe_linha - E se sum_6m = 0; A <= 0,75; B <= 0,85; C <= 0,95; senão D
 # Layout final: file, sheet, Item Principal Cadeia, 6 últimos meses,
@@ -556,8 +556,6 @@ for aba in ABAS_2W:
              .when(F.col("perc_acc") <= 0.95, "C")
              .otherwise("D")
         )
-        .withColumn("part_perc", F.round("part_perc", 8))
-        .withColumn("perc_acc", F.round("perc_acc", 8))
         .drop("_total")
     )
     # Mantém apenas os 6 últimos meses (mês ausente no pivot sai como 0)

@@ -432,3 +432,126 @@ result = move_volume_files(
     dry_run=False,
     validate_empty=True,
 )
+
+# COMMAND ----------
+
+# DBTITLE 1,View para Genie — Demand AI Agent
+# ==============================================================================
+# VIEW PARA GENIE — DEMAND AI AGENT
+# ==============================================================================
+# Cria (ou substitui) uma view no schema _agents_databases, otimizada
+# para leitura por agentes de IA (Genie).  Exclui colunas de auditoria
+# e adiciona comentários descritivos em cada coluna.
+#
+# SALVAGUARDA: a view é uma definição SQL — seus dados atualizam
+# automaticamente quando a tabela-fonte muda.  O DDL abaixo só executa
+# quando a view não existe ou quando a versão de metadados muda.
+# Para forçar recriação manual, altere FORCE_RECREATE_VIEW = True.
+# ==============================================================================
+
+# ---------------------------------------------------------------------------
+# Controle de execução
+# ---------------------------------------------------------------------------
+FORCE_RECREATE_VIEW  = False          # ← True para forçar recriação manual
+VIEW_METADATA_VERSION = "1"           # ← Incremente ao alterar DDL/comentários/tags
+
+AGENT_SCHEMA = "parts_hdbk_sandbox._agents_databases"
+VIEW_NAME    = f"{AGENT_SCHEMA}.forecast_enriched"
+
+# ---------------------------------------------------------------------------
+# Verificar se a view já existe com a versão atual de metadados
+# ---------------------------------------------------------------------------
+_view_exists = spark.catalog.tableExists(VIEW_NAME)
+_needs_update = True
+
+if _view_exists and not FORCE_RECREATE_VIEW:
+    _current_tags = (
+        spark.sql(f"SELECT tag_value FROM {AGENT_SCHEMA.split('.')[0]}.information_schema.table_tags "
+                  f"WHERE schema_name = '{AGENT_SCHEMA.split('.')[1]}' "
+                  f"AND table_name = 'forecast_enriched' "
+                  f"AND tag_name = 'metadata_version'")
+        .collect()
+    )
+    if _current_tags and _current_tags[0]["tag_value"] == VIEW_METADATA_VERSION:
+        _needs_update = False
+
+if not _needs_update:
+    print(f"View {VIEW_NAME} já existe com metadados v{VIEW_METADATA_VERSION}. DDL ignorado.")
+    print("Para forçar recriação, defina FORCE_RECREATE_VIEW = True ou incremente VIEW_METADATA_VERSION.")
+else:
+    _action = "Recriando (forçado)" if (_view_exists and FORCE_RECREATE_VIEW) else \
+              "Atualizando metadados" if _view_exists else "Criando"
+    print(f"{_action} view {VIEW_NAME} (metadados v{VIEW_METADATA_VERSION})...")
+
+    # -------------------------------------------------------------------
+    # 1) Criar/substituir a view (somente colunas de negócio)
+    # -------------------------------------------------------------------
+    spark.sql(f"""
+        CREATE OR REPLACE VIEW {VIEW_NAME} AS
+        SELECT
+            forecast_cycle,
+            department,
+            forecast_type,
+            segment,
+            market,
+            material,
+            main_material,
+            forecast_classification,
+            forecast_classification_tag,
+            lag,
+            forecast_month,
+            forecast_qty
+        FROM {TARGET_TABLE}
+    """)
+
+    # -------------------------------------------------------------------
+    # 2) Comentário da view
+    # -------------------------------------------------------------------
+    VIEW_COMMENT = (
+        "Forecast enriched dinamizado (unpivot) para agentes de IA. "
+        "Horizonte limitado a 12 meses, com lookup de cadeia de materiais. "
+        "Exclui colunas de auditoria. "
+        f"Fonte: {TARGET_TABLE}"
+    )
+    spark.sql(
+        f"COMMENT ON TABLE {VIEW_NAME} IS '{VIEW_COMMENT}'"
+    )
+
+    # -------------------------------------------------------------------
+    # 3) Comentários de colunas
+    # -------------------------------------------------------------------
+    VIEW_COLUMN_COMMENTS = {
+        "forecast_cycle":               "Primeiro dia do mês do ciclo de forecast. Exemplo: 2026-01-01 representa o ciclo de janeiro/2026.",
+        "department":                    "Departamento de origem (ex: Parts, Power Products). Prefixos Domestic/Export já removidos.",
+        "forecast_type":                 "Tipo de forecast: Enrich (estatístico enriquecido), Judgment (ajuste manual) ou Consensus (consenso final).",
+        "segment":                       "Código da empresa SAP. 0200 = 2W (motos), 0500 = 4W (automóveis).",
+        "market":                        "Mercado de destino: Domestic (mercado interno) ou Export (exportação).",
+        "material":                      "Código do material/peça original (partnumber SAP).",
+        "main_material":                 "Material principal na cadeia de substituição (item_principal_cadeia via pr_cadastrao.material_cadeia). Quando não há cadeia, mantém o material original.",
+        "forecast_classification":       "Classificação completa do forecast (ex: Supply - Parts, Supply - Forecastable).",
+        "forecast_classification_tag":   "Tag extraída da classificação — texto após o primeiro ' - ' (ex: Parts, Forecastable). Nulo quando não há separador.",
+        "lag":                           "Offset em meses do horizonte de forecast. 0 = mês corrente do ciclo, 1 = próximo mês, até 11.",
+        "forecast_month":                "Mês-alvo do forecast, calculado como forecast_cycle + lag meses. Exemplo: ciclo 2026-01-01 com lag 3 → 2026-04-01.",
+        "forecast_qty":                  "Quantidade prevista (unidades) para o material no mês-alvo.",
+    }
+
+    for col_name, comment in VIEW_COLUMN_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        spark.sql(f"COMMENT ON COLUMN {VIEW_NAME}.`{col_name}` IS '{escaped}'")
+
+    # -------------------------------------------------------------------
+    # 4) Tags de governança (inclui metadata_version como controle)
+    # -------------------------------------------------------------------
+    spark.sql(f"""
+        ALTER TABLE {VIEW_NAME} SET TAGS (
+            'domain'              = 'forecast',
+            'layer'               = 'agents',
+            'source'              = 'sap',
+            'agent'               = 'demand_ai_agent',
+            'data_classification' = 'internal',
+            'metadata_version'    = '{VIEW_METADATA_VERSION}'
+        )
+    """)
+
+    print(f"View {VIEW_NAME} criada/atualizada com sucesso (metadados v{VIEW_METADATA_VERSION}).")
+    print(f"Colunas documentadas: {len(VIEW_COLUMN_COMMENTS)}")
