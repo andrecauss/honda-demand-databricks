@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.7 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.8 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -137,7 +137,7 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 
 ## 8. Perfis de acesso
 ### Definições confirmadas na entrevista
-- Demand, Inventory Long Term, Inventory Short Term e Spec podem consultar as mesmas bases compartilhadas. Não há, neste momento, restrição de consulta por departamento.
+- Demand, Inventory Long Term, Inventory Short Term e Spec compartilham a consulta às bases publicadas de Trusted e Refined, sem distinção por departamento. Isso não libera automaticamente todos os schemas ou a camada Raw. Esta regra refina a definição inicial de leitura compartilhada, conforme validado por André.
 - A distinção de acesso humano é por perfil: Owner, Key User e Standard User. André também solicitou um perfil para upload e download no File Orchestrator; o nome proposto é File User, ainda sujeito à confirmação. Os nomes permanecem em inglês.
 - Consulta compartilhada não define automaticamente permissões de escrita, alteração de notebooks, execução de jobs ou administração.
 - As responsabilidades dos processos de Inventory Long Term e Inventory Short Term foram adiadas por André e poderão ser preenchidas no futuro; não bloqueiam a proposta inicial.
@@ -145,13 +145,29 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 | Perfil humano confirmado | Definição de permissões |
 | --- | --- |
 | Owner | Os quatro supervisores, um por departamento, são Owners do sandbox conforme relatado por André. Podem gerenciar acessos dentro da delegação existente; não podem criar grupos de usuários atualmente |
-| Key User | Pode criar e editar notebooks, conforme confirmado por André. Escopo de execução, escrita em dados e manutenção de objetos ainda a detalhar |
-| Standard User | Pode consultar tabelas diretamente por SQL, conforme confirmado por André; não fica restrito ao agente ou dashboards. Permissões de alteração não foram concedidas nesta definição |
+| Key User | Pode criar e editar notebooks e consultar as bases Trusted e Refined publicadas. Acesso à Raw conforme as fontes necessárias para desenvolvimento, investigação ou validação de cargas. Escopo de execução, escrita em dados e manutenção de objetos ainda a detalhar |
+| Standard User | Pode consultar por SQL as bases Trusted e Refined publicadas, inclusive dados detalhados aprovados; não fica restrito ao agente ou dashboards. Sem leitura da Raw por padrão. Permissões de alteração não foram concedidas nesta definição |
 | File User (nome proposto) | Upload nos volumes de entrada e download nos volumes de saída autorizados do File Orchestrator |
 
 Os quatro supervisores são os Owners funcionais do sandbox. O TI mantém uma função administrativa superior e atualmente não permite que os Owners criem grupos de usuários. A criação desses grupos exige solicitação ao TI. O alcance exato da delegação técnica deve ser validado no ambiente, sem presumir privilégios administrativos globais.
 
 “Quatro Owners” descreve a responsabilidade relatada, não confirma quatro proprietários técnicos individuais no mesmo objeto do Unity Catalog. A forma atual de atribuição (grupo existente, propriedade de objetos ou privilégios delegados) ainda não foi inspecionada.
+
+### Regra de leitura por camada — validada por André
+| Camada ou área | Regra de acesso proposta e validada |
+| --- | --- |
+| Raw e arquivos técnicos de origem | Área técnica. Leitura das rotinas de ingestão/processamento e dos Key Users conforme fontes necessárias para desenvolvimento, investigação e validação. Sem leitura geral do Standard User |
+| Trusted publicada | Consulta compartilhada entre os quatro departamentos, por Standard Users e Key Users, inclusive via SQL e com detalhe quando previsto no contrato |
+| Refined publicada | Consulta compartilhada aos produtos aprovados para consumo, por Standard Users e Key Users |
+| Intermediárias e resultados ainda não publicados | Acesso das identidades e mantenedores necessários ao processo; sem liberação geral apenas por estarem em um schema de processo |
+| Views do agente | Escopo publicado e aprovado para o agente; sem leitura automática da Raw |
+| File Orchestrator | Perfil File User restrito aos volumes de entrada/saída autorizados; continua independente dos privilégios em tabelas |
+
+O critério é camada + estado de publicação + necessidade do perfil, sem distinção de consulta entre departamentos. Um nome de schema ou prefixo não prova a qualidade ou a publicação da tabela. O contrato e o inventário devem indicar a classificação real.
+
+Evitar grants amplos de SELECT no catálogo ou em schemas que misturem Raw, intermediárias e produtos publicados. Um SELECT no schema é herdado por tabelas e views atuais e futuras. Usar permissões por objetos publicados ou, após avaliar dependências, schemas de consumo que contenham somente objetos aprovados. Isso é uma proposta de controle; nenhum grant ou movimento de objeto foi executado.
+
+Acesso à Raw para Key User não implica escrita na fonte. A leitura não altera o pipeline, mas análises feitas diretamente na Raw podem ignorar tratamentos e regras; por isso a base publicada é o ponto padrão para consumo.
 
 ### Implementação dos acessos e dependência do TI
 | Responsável | Atribuição confirmada ou proposta |
@@ -226,7 +242,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Standard User pode consultar tabelas diretamente por SQL, conforme confirmado por André. Owner: os quatro supervisores podem gerenciar acessos dentro da delegação existente, mas criação de grupos depende de solicitação ao TI/Admin. Pendentes: inspecionar limites efetivos da delegação e preparar o mapeamento de perfis/grupos; detalhar separadamente execução e escrita em bases.
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases Trusted e Refined publicadas permitida aos quatro, sem distinção por departamento; Raw reservada ao uso técnico e à validação, conforme necessidade. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Standard User pode consultar por SQL as bases Trusted e Refined publicadas; Raw não é liberada por padrão. Owner: os quatro supervisores podem gerenciar acessos dentro da delegação existente, mas criação de grupos depende de solicitação ao TI/Admin. Pendentes: inspecionar limites efetivos da delegação e preparar o mapeamento de perfis/grupos; detalhar separadamente execução e escrita em bases.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
@@ -249,5 +265,7 @@ Critérios de aceitação futuros: nenhuma dependência sem dono; nenhum process
 - [Compactação](../../01_demand/7.1_zip_exported_demand_files.py).
 - [Privilégios de volumes — Azure Databricks](https://learn.microsoft.com/en-us/azure/databricks/volumes/privileges).
 - [Views e requisitos de acesso — Azure Databricks](https://learn.microsoft.com/en-us/azure/databricks/views/).
+- [Arquitetura medalhão — Azure Databricks](https://learn.microsoft.com/en-us/azure/databricks/lakehouse/medallion).
+- [Privilégios e herança no Unity Catalog — Azure Databricks](https://learn.microsoft.com/en-us/azure/databricks/data-governance/unity-catalog/access-control/privileges-reference).
 
 As referências técnicas foram consultadas em 2026-11-05. O padrão de nomes, a separação dos volumes e os controles de publicação são recomendações desta proposta.
