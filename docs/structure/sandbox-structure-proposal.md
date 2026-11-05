@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.3 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.4 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -138,7 +138,7 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 ## 8. Perfis de acesso
 ### Definições confirmadas na entrevista
 - Demand, Inventory Long Term, Inventory Short Term e Spec podem consultar as mesmas bases compartilhadas. Não há, neste momento, restrição de consulta por departamento.
-- A distinção de acesso humano é por perfil: Owner, Key User e Standard User. Os nomes permanecem em inglês.
+- A distinção de acesso humano é por perfil: Owner, Key User e Standard User. André também solicitou um perfil para upload e download no File Orchestrator; o nome proposto é File User, ainda sujeito à confirmação. Os nomes permanecem em inglês.
 - Consulta compartilhada não define automaticamente permissões de escrita, alteração de notebooks, execução de jobs ou administração.
 - As responsabilidades dos processos de Inventory Long Term e Inventory Short Term foram adiadas por André e poderão ser preenchidas no futuro; não bloqueiam a proposta inicial.
 
@@ -146,11 +146,14 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 | --- | --- |
 | Owner | Escopo de responsabilidade e poderes administrativos a confirmar |
 | Key User | Poderes de desenvolvimento, execução e manutenção a confirmar |
-| Standard User | Canais de consulta e operações de upload/download a confirmar |
+| Standard User | Canais de consulta e demais operações a confirmar |
+| File User (nome proposto) | Upload nos volumes de entrada e download nos volumes de saída autorizados do File Orchestrator |
 
-O perfil de negócio Owner não é automaticamente a propriedade técnica de todo objeto no Unity Catalog; essa correspondência precisa ser decidida. Os quatro departamentos não determinam, por si, perfis ou grants diferentes. Perfis podem ser implementados por grupos após detalhar suas permissões.
+O perfil de negócio Owner não é automaticamente a propriedade técnica de todo objeto no Unity Catalog; essa correspondência precisa ser decidida. O perfil File User, isoladamente, propõe acesso aos arquivos de intercâmbio: não inclui grants em tabelas, edição de notebooks, execução de jobs ou administração. A pessoa pode acumular outro perfil se necessário; essa combinação ainda deve ser definida. Aplicar leitura/escrita nos volumes de entrada e somente leitura nos volumes de saída autorizados, observando a limitação de upload direto descrita na seção 4. Não tratar 'upload' como garantia de impossibilidade de leitura ou exclusão na entrada.
 
-### Capacidades técnicas propostas, ainda não atribuídas aos três perfis
+Os quatro departamentos não determinam, por si, perfis ou grants diferentes. Perfis podem ser implementados por grupos após detalhar suas permissões.
+
+### Capacidades técnicas propostas, ainda não atribuídas aos perfis humanos
 A matriz abaixo é um inventário de capacidades para discutir. Não cria perfis humanos adicionais nem afirma que o usuário aprovou as atribuições. As identidades técnicas dos jobs são tratadas separadamente.
 
 | Papel | Arquivos de entrada | Saída publicada | Bases/tabelas | Administração |
@@ -210,7 +213,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Próximo ponto: definir capacidades de cada perfil, começando pelo Key User.
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Próximo ponto: definir capacidades de cada perfil, começando pelo Key User.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
