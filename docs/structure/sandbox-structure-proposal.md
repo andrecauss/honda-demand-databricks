@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.9 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.10 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -40,9 +40,9 @@ No Unity Catalog, `catalog.schema.volume` identifica um volume. Em `/Volumes/cat
 | Base compartilhada tratada | `trusted_<entidade>` | `trusted_customers` |
 | Produto com regra de negócio | `refined_<produto>` | `refined_demand_monthly` |
 | View de consumo | `vw_<produto>` | `vw_demand_history` |
-| Volume de intercâmbio | `<escopo>_<input_ou_output>` | `demand_input`, `demand_output` |
-| Volume técnico de fonte | `files_<fonte>_<dataset>` | `files_sap_kna1` |
-| Volume técnico de processo | `files_<processo>` | `files_demand` |
+| Volume — base | `<source>_<dataset>` | `sap_kna1`, `sap_material_master` |
+| Volume — interface com acesso separado | `<source>_<dataset>_<input_ou_output>` | `sap_material_master_input`, `databricks_historical_demand_output` |
+| Volume técnico de processo | Mesma base `<source>_<dataset>`; estados em diretórios | `databricks_historical_demand/working/<run_id>/` |
 | Notebook | `<etapa>_<acao>_<objeto>` | `10_ingest_sales_order` |
 
 Identificadores novos: inglês, minúsculas, snake_case, sem acentos ou espaços. Nomes dos departamentos permanecem em inglês: Demand, Inventory Long Term, Inventory Short Term e Spec. Descrições explicativas podem ficar em português; rótulos de exportação dependem do contrato. Etapas 10/20/30 indicam ordenação visual; as dependências reais pertencem ao contrato do pipeline e ao job.
@@ -105,17 +105,26 @@ O controle por objeto exige manter uma lista de bases publicadas e revisar grant
 ## 4. File Orchestrator: interface e áreas internas
 Separar volumes quando os públicos ou permissões diferirem. Pastas organizam; não constituem isolamento de permissões do Unity Catalog.
 
+### Padrão de nomes de volumes — validado por André
+Usar `<source>_<dataset>` como base. Acrescentar `_input` ou `_output` quando a finalidade precisar identificar uma interface e separar permissões. Usar inglês, minúsculas e snake_case.
+
+`source` identifica o sistema de origem ou produtor, não o departamento remetente. `dataset` identifica o conteúdo. Exemplos: `sap_material_master`, `sap_kna1` e `databricks_historical_demand`. Fonte externa ainda desconhecida deve ser confirmada antes do nome definitivo; não substituir a origem pelo nome de quem fez o upload.
+
+Pastas organizam estado, referência e lote; não representam fronteiras de acesso. O sufixo de finalidade não muda por si a segurança: entrada e saída com permissões diferentes precisam ser objetos de volume distintos.
+
 | Caminho proposto sob `/Volumes/parts_hdbk_sandbox/` | Uso | Público |
 | --- | --- | --- |
-| `_file_orchestrator/shared_input/<dataset>/` | Entrega de fontes comuns | Grupos autorizados a enviar essas fontes |
-| `_file_orchestrator/demand_input/<dataset>/` | Entradas específicas de demanda | Upload de demanda |
-| `_file_orchestrator/demand_output/<produto>/<referencia>/<run_id>/` | Resultados publicados | Download de demanda |
-| `_file_orchestrator/forecast_input/<dataset>/` | Entradas específicas de forecast | Upload desse processo |
-| `_file_orchestrator/forecast_output/<produto>/<referencia>/<run_id>/` | Forecast publicado | Download desse processo |
-| `dm_customers/files_sap_kna1/<estado>/<batch_id>/` | Recepção técnica, arquivo original e rejeições | Rotina mantenedora e suporte autorizado |
-| `pr_demand/files_demand/<estado>/<run_id>/` | Trabalho, exportação temporária e pacotes | Rotinas de demanda e suporte autorizado |
+| `_file_orchestrator/sap_kna1_input/<referencia>/<batch_id>/` | Entrega de uma fonte comum de clientes | Grupos autorizados a enviar essa fonte |
+| `_file_orchestrator/sap_sales_order_input/<referencia>/<batch_id>/` | Entrega de ordens de venda SAP | Grupos autorizados a enviar essa fonte |
+| `_file_orchestrator/sap_material_master_input/<referencia>/<batch_id>/` | Exemplo de entrega do cadastro mestre SAP | Confirmar dataset e grupos remetentes |
+| `_file_orchestrator/databricks_historical_demand_output/<referencia>/<run_id>/` | Resultados publicados de demanda | Download autorizado |
+| `_file_orchestrator/databricks_forecast_output/<referencia>/<run_id>/` | Resultados publicados de forecast | Download autorizado |
+| `dm_customers/sap_kna1/<estado>/<batch_id>/` | Recepção técnica, arquivo original e rejeições | Rotina mantenedora e suporte autorizado |
+| `pr_demand/databricks_historical_demand/<estado>/<run_id>/` | Trabalho, exportação temporária e pacotes | Rotinas de demanda e suporte autorizado |
 
-`shared_input` só é adequado quando todos os remetentes têm o mesmo escopo de acesso. Se houver fontes com públicos diferentes, criar volumes específicos, por exemplo `customers_input`; não tentar proteger subpastas com grants de volume.
+O caminho de entrada de forecast segue `_file_orchestrator/<source>_forecast_enriched_input/`, com origem a confirmar. Os exemplos de nomes são destinos propostos, sujeitos ao mapeamento de dependências.
+
+Dimensionar volumes pela necessidade de isolamento e pelo contrato do dataset. Não criar um novo volume por mês, arquivo ou execução; para essas divisões, usar pastas. Fontes ou produtos diferentes só compartilham um volume se contrato, público e finalidade forem compatíveis; nesse caso, o nome deve representar o conjunto de dados real e o acesso é compartilhado ao volume inteiro. A proposta anterior de entradas genéricas por departamento é substituída pelos exemplos por origem e dado desta seção.
 
 Estados internos sugeridos: `received`, `archive`, `quarantine` para arquivos de fonte; `working`, `ready` para arquivos de processo. Checkpoints e schema de ingestão ficam em caminhos técnicos exclusivos da rotina e não em volumes de usuário.
 
@@ -242,14 +251,14 @@ Acesso somente às views depende do compute suportado, dos privilégios do owner
 ## 9. Mapeamento inicial: atual → proposta
 | Atual, conforme inventário/código | Destino ou tratamento proposto | Decisão pendente |
 | --- | --- | --- |
-| `_file_orchestrator.demand`, diretórios `01_apuracao_demanda/in` e `out` | Separar volumes `demand_input` e `demand_output`; fontes comuns em entrada própria | Públicos de cada entrada/saída |
-| `dm_customers.kna1_sap` e `knvv_sap` (volumes) | `files_sap_kna1` e `files_sap_knvv` | Compatibilidade de jobs e checkpoints |
+| `_file_orchestrator.demand`, diretórios `01_apuracao_demanda/in` e `out` | Separar entradas `<source>_<dataset>_input` e saída `databricks_historical_demand_output`; uma entrada comum por contrato de fonte | Públicos de cada entrada/saída |
+| `dm_customers.kna1_sap` e `knvv_sap` (volumes) | `sap_kna1` e `sap_knvv` | Compatibilidade de jobs e checkpoints |
 | `dm_materials.sap` | Nome por dataset efetivamente contido | Listar arquivos e consumidores |
-| `dt_sales_orders.sap_sales_order` | `files_sap_sales_order` | Caminhos e histórico da ingestão |
-| `pr_cadastrao.sap_cadastraorefinado` | Fonte comum em `dm_materials.files_sap_material_cadastrao` | Confirmar cobertura e dono da fonte |
-| `pr_cadastrao.out_material_de_para` | Trabalho em volume técnico; resultado em output do processo | Público e responsável pelo DE-PARA |
-| `pr_demand.demand_refined_exportfiles` | `pr_demand.files_demand` como estágio; publicação no orquestrador | Confirmar qual caminho é realmente usado |
-| `pr_forecast.forecast_enriched` (volume) | `pr_forecast.files_forecast` técnico; upload no orquestrador | Fonte e grupo remetente |
+| `dt_sales_orders.sap_sales_order` | `sap_sales_order` | Caminhos e histórico da ingestão |
+| `pr_cadastrao.sap_cadastraorefinado` | Fonte comum em `dm_materials.sap_material_master` (nome candidato; confirmar o conteúdo do cadastrão) | Confirmar cobertura e dono da fonte |
+| `pr_cadastrao.out_material_de_para` | Trabalho em volume técnico; resultado proposto em `databricks_material_mapping_output` no orquestrador | Público e responsável pelo DE-PARA |
+| `pr_demand.demand_refined_exportfiles` | `pr_demand.databricks_historical_demand` como estágio; publicação no orquestrador | Confirmar qual caminho é realmente usado |
+| `pr_forecast.forecast_enriched` (volume) | `pr_forecast.<source>_forecast_enriched` técnico; upload em `<source>_forecast_enriched_input`, com origem a confirmar | Fonte e grupo remetente |
 | `_agents_databases.*` | Manter fachada e especificar contrato de cada view | Revisão de dados e identidade |
 | `00_cadastrao`, `01_demand`, `04_forecast`, `05_supersession` no Git | Diretórios por domínio/processo, com convenção única | Separar fonte comum de produto de negócio |
 
