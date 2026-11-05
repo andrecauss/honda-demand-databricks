@@ -1,10 +1,19 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.1 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.2 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
 
-Objetivo: organizar o sandbox para quatro departamentos que compartilham fontes, mas possuem processos, calendários e produtos distintos. Demanda é o único departamento confirmado nesta conversa; os outros três e seus responsáveis estão pendentes.
+Objetivo: organizar o sandbox para quatro departamentos que compartilham fontes, mas possuem processos, calendários e produtos distintos. Os quatro departamentos confirmados são Demand, Inventory Long Term, Inventory Short Term e Spec. Os nomes dos departamentos serão sempre em inglês, conforme definido por André. Pessoas responsáveis, processos, consumidores e acessos ainda serão levantados.
+
+| Departamento confirmado | Identificador técnico proposto | Responsabilidades e acessos |
+| --- | --- | --- |
+| Demand | `demand` | A detalhar na entrevista; repositório atual concentra processos de demanda |
+| Inventory Long Term | `inventory_long_term` | A detalhar; não inferir horizonte, processos ou permissões pelo nome |
+| Inventory Short Term | `inventory_short_term` | A detalhar; não inferir horizonte, processos ou permissões pelo nome |
+| Spec | `spec` | Technical Specification; processos e acessos a detalhar |
+
+Esses identificadores são sugestões para metadados e grupos futuros, não novos schemas por departamento. Department e process são dimensões distintas: por exemplo, forecast é um processo, sem implicar um quinto departamento.
 
 Fonte do levantamento: árvore da main em `0e7e2a33f836db5c38617e935d60a037dcf942a7`, inventário `catalog_parts_hdbk_sandbox.md` de 2026-11-04 e leitura de notebooks. O inventário é uma fotografia documental; permissões, jobs, disponibilidade e dependências externas não foram inspecionados no ambiente.
 
@@ -36,7 +45,7 @@ No Unity Catalog, `catalog.schema.volume` identifica um volume. Em `/Volumes/cat
 | Volume técnico de processo | `files_<processo>` | `files_demand` |
 | Notebook | `<etapa>_<acao>_<objeto>` | `10_ingest_sales_order` |
 
-Identificadores novos: inglês, minúsculas, snake_case, sem acentos ou espaços. Nomes de negócio podem continuar em português nas descrições e exportações acordadas. Etapas 10/20/30 indicam ordenação visual; as dependências reais pertencem ao contrato do pipeline e ao job.
+Identificadores novos: inglês, minúsculas, snake_case, sem acentos ou espaços. Nomes dos departamentos permanecem em inglês: Demand, Inventory Long Term, Inventory Short Term e Spec. Descrições explicativas podem ficar em português; rótulos de exportação dependem do contrato. Etapas 10/20/30 indicam ordenação visual; as dependências reais pertencem ao contrato do pipeline e ao job.
 
 Os exemplos não implicam renomeação de objetos existentes. Mapear antes de migrar. A proposta de schemas preserva os prefixos do catálogo e do usuário, em lugar da alternativa genérica de ambiente/camada/domínio presente nas instruções de arquitetura do repositório. Não atualizar essas instruções antes de decidir o padrão.
 
@@ -186,7 +195,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Primeira pergunta: quais são os quatro departamentos e o principal uso esperado de cada um?
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Próxima pergunta: quais são os principais processos de cada departamento, começando pela distinção entre Inventory Long Term e Inventory Short Term?
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
