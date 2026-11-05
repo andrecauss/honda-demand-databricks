@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.11 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.12 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -169,6 +169,69 @@ O File User escreve no input autorizado e lê o output autorizado; não recebe a
 
 A implantação futura exigiria adaptar leitura de pastas, roteamento, ingestão e controles. Renomear volumes isoladamente não implementa o fluxo. Não houve alteração de código nesta branch.
 
+## 4.2. Caso Cadastrão: evolução de carga mensal para diária
+### Contexto informado por André
+- O Cadastrão chega pronto de processamento externo ao SAP/Databricks. Neste momento não existe uma etapa DM a reproduzir artificialmente.
+- Manter o processo em `pr_cadastrao` enquanto as transformações externas não forem incorporadas ao Databricks.
+- Atualmente são recebidos dois arquivos Excel por mês; a quantidade de arquivos aumentará. Não fixar a regra em cinco arquivos.
+- Objetivo: receber arquivos a cada dia útil, unificar o conjunto e produzir várias tabelas a partir da entrada Raw.
+- Algumas áreas precisam da primeira posição do mês; outras precisam da posição atual.
+- Ainda confirmar se cada conjunto diário é uma fotografia completa ou apenas alterações. Também confirmar o significado operacional de primeira posição do mês.
+
+Este é o caso prioritário trazido pelo usuário para testar a proposta. O exemplo KNA1 anterior permanece somente como ilustração, não substitui o processo explicado por André.
+
+### Evidência no código atual
+O notebook `00_cadastrao/1.1_ingest_raw_material_cadastrao.ipynb` lê `pr_cadastrao/sap_cadastraorefinado/current/`, transforma/consolida os arquivos, extrai ano/mês do nome, grava `reference_date` no primeiro dia do mês e recria `material_cadastrao`.
+
+O notebook 1.2 reduz a referência a ano/mês e substitui o snapshot daquele mês nos escopos empresa/centro presentes. O notebook 1.3 também reduz a referência ao início do mês e contém guardas cronológicas e de repetição de período para SCD2 mensal. Rodar os notebooks diariamente sem redesenhar esses contratos pode substituir a referência mensal ou bloquear cargas no mesmo mês.
+
+Os nomes e metadados atuais atribuem a fonte a SAP. O relato do usuário esclarece que o arquivo imediato já vem de um processo externo; distinguir sistema produtor imediato, sistemas de origem anteriores e tratamento já realizado.
+
+### Nomes e localização propostos
+- Entrada de intercâmbio: `_file_orchestrator.<source>_material_register_input`.
+- Volume técnico: `pr_cadastrao.<source>_material_register`, com pastas `received/<batch_id>/`, `archive/<batch_id>/` e `quarantine/<batch_id>/`.
+- `source` depende da identificação do processo/ferramenta que gera o arquivo. Não fixar `sap` somente por serem dados originalmente extraídos dele.
+- Tabelas candidatas no próprio `pr_cadastrao`: `raw_material_register`, `trusted_material_register_history`, e interfaces `vw_material_register_current` / `vw_material_register_month_start`.
+- A escolha de nomes técnicos em inglês é proposta. O schema existente `pr_cadastrao` permanece nesta etapa.
+- Criar output de arquivos somente para produtos com necessidade de download. Tabelas e views já podem ser a interface de consumo dos demais.
+
+O mapeamento anterior que sugeria transferir o arquivo para `dm_materials` não se aplica automaticamente a este caso. A localização atual por processo é preservada, conforme a explicação de André.
+
+### Fluxo recomendado, assumindo fotografias completas por lote
+1. Receber os arquivos esperados do lote diário, cuja composição será configurável por origem/empresa/centro e contrato, não por uma quantidade fixa.
+2. Registrar os arquivos originais, checksum e escopo; checar completude do conjunto. Arquivos que chegam em momentos diferentes não devem publicar uma fotografia parcial como se fosse completa.
+3. Preservar o conteúdo recebido na Raw com identificação de lote e origem, antes das transformações do Databricks. Raw é o dado tal como recebido nesta fronteira, mesmo que a origem externa já o tenha processado.
+4. Unificar os arquivos compatíveis do mesmo lote, tratar e validar chaves, conflitos, escopos e totais. Regras de combinação dependem dos layouts: confirmar se os arquivos são partições de linhas ou fontes a relacionar.
+5. Publicar uma fotografia validada com referência diária e identificação de lote. Conservar as fotografias anteriores; publicação atual aponta para o último lote válido e completo da referência apropriada.
+6. Fixar um lote de referência para a primeira posição mensal, segundo regra de negócio a confirmar. As atualizações seguintes não mudam essa escolha automaticamente.
+7. Derivar os produtos do Cadastrão da versão identificada, mantendo consumo atual e mensal separados e rastreáveis.
+
+A primeira posição mensal deve referenciar um lote coerente, não selecionar a primeira ocorrência de cada material em datas diferentes. Se o contrato admitir publicações independentes por centro/empresa, definir explicitamente a referência por escopo e os critérios de completude para a visão consolidada.
+
+### Tempo e publicação
+Registrar separadamente:
+- `position_date`: data da posição de negócio declarada pela fonte;
+- `received_at`: instante de chegada;
+- `processed_at`: instante de processamento;
+- `batch_id` e revisão: conjunto de arquivos e tentativa/correção;
+- referência mensal escolhida e seu lote publicado.
+
+Receber um arquivo antigo hoje não o torna automaticamente a posição mais atual. Reenvio idêntico não cria duplicação; correção gera revisão rastreável. Alterar uma primeira posição mensal já publicada exige decisão explícita e histórico da revisão.
+
+Até confirmação, “primeira do mês” significa apenas requisito de uma referência mensal estável; ainda não está decidido se é primeiro dia calendário, primeiro dia útil ou primeiro lote completo válido recebido. A política de falta de carga esperada e dados atrasados também fica pendente.
+
+### Fotografias versus somente mudanças
+A recomendação inicial para testar o requisito é Raw preservada por lote e fotografias diárias publicadas, pois torna diretas as consultas de posição atual e primeira posição mensal. Avaliar volume e retenção antes de definir o armazenamento final.
+
+Para atributos técnicos que mudam pouco, SCD2 é uma alternativa/complemento: nova versão apenas quando campos rastreados mudam. Para quantidades/preços voláteis, snapshots podem ser mais simples. Não substituir todo o histórico por um MERGE que mantém apenas o estado atual, nem depender apenas da retenção de versões Delta para guardar fechamentos permanentes.
+
+Se os arquivos forem deltas, será necessário reconstruir o estado completo antes de publicar as duas referências; ausência de um material no arquivo não significa exclusão. Mesmo com fotografia completa, interpretar ausências somente dentro do escopo completo validado.
+
+A proposta ainda não fixa todos os dados em snapshots diários nem adota SCD2 para todas as colunas. Fotografia completa versus delta, grãos de cada produto, volume e retenção orientam a decisão final.
+
+### Pergunta seguinte
+Cada envio diário contém novamente a base completa de cada escopo ou apenas registros novos/alterados?
+
 ## 5. Ciclo de vida de um arquivo
 1. Receber: identificar dataset, remetente, nome original, referência, instante e `batch_id`; só liberar para processamento após entrega completa.
 2. Validar: formato, versão de layout, colunas, referência e checksum. Fonte não cadastrada ou arquivo inválido fica em quarentena com motivo.
@@ -292,7 +355,7 @@ Acesso somente às views depende do compute suportado, dos privilégios do owner
 | `dm_customers.kna1_sap` e `knvv_sap` (volumes) | `sap_kna1` e `sap_knvv` | Compatibilidade de jobs e checkpoints |
 | `dm_materials.sap` | Nome por dataset efetivamente contido | Listar arquivos e consumidores |
 | `dt_sales_orders.sap_sales_order` | `sap_sales_order` | Caminhos e histórico da ingestão |
-| `pr_cadastrao.sap_cadastraorefinado` | Fonte comum em `dm_materials.sap_material_master` (nome candidato; confirmar o conteúdo do cadastrão) | Confirmar cobertura e dono da fonte |
+| `pr_cadastrao.sap_cadastraorefinado` | Manter em `pr_cadastrao.<source>_material_register` como entrada do processo externo, conforme caso 4.2 | Identificar produtor imediato, composição e granularidade do lote |
 | `pr_cadastrao.out_material_de_para` | Trabalho em volume técnico; resultado proposto em `databricks_material_mapping_output` no orquestrador | Público e responsável pelo DE-PARA |
 | `pr_demand.demand_refined_exportfiles` | `pr_demand.databricks_historical_demand` como estágio; publicação no orquestrador | Confirmar qual caminho é realmente usado |
 | `pr_forecast.forecast_enriched` (volume) | `pr_forecast.<source>_forecast_enriched` técnico; upload em `<source>_forecast_enriched_input`, com origem a confirmar | Fonte e grupo remetente |
