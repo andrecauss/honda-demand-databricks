@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.13 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.14 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -229,6 +229,27 @@ Para atributos técnicos que mudam pouco, SCD2 é uma alternativa/complemento: n
 Se os arquivos forem deltas, será necessário reconstruir o estado completo antes de publicar as duas referências; ausência de um material no arquivo não significa exclusão. Mesmo com fotografia completa, interpretar ausências somente dentro do escopo completo validado.
 
 O formato de entrada completa está confirmado. Para a proposta inicial, preservar os lotes completos recebidos e publicar fotografias validadas permite atender às duas posições diretamente. Grãos dos produtos, volume e retenção ainda orientam a materialização final; não adotar SCD2 indiscriminadamente para todas as colunas.
+
+### Auditoria existente: preservar e complementar
+André confirmou que a auditoria já faz parte do padrão do projeto. A proposta reaproveita as colunas implementadas no Cadastrão; não cria um segundo conjunto equivalente com nomes diferentes.
+
+| Coluna existente no notebook 1.1 | Significado observado | Tratamento na proposta |
+| --- | --- | --- |
+| `_ingested_at` | Instante da ingestão no Databricks | Manter; representa processamento, não comprova hora de upload |
+| `_last_updated_at` | Instante de atualização; na recriação atual é definido junto à ingestão | Manter sem redefinir como data de posição |
+| `_ingested_by` | `current_user()` da execução | Manter; não comprova identidade de quem enviou o arquivo |
+| `_load_type` | Tipo de carga; atualmente `full` | Manter conforme formato completo confirmado |
+| `_load_id` | UUID da execução | Manter; associar ao lote recebido e a seus arquivos |
+| `_source_file_path` | Atualmente contém `SOURCE_DIR`, caminho da pasta | Preservar rastreabilidade; complementar no desenho futuro com relação dos arquivos efetivamente consumidos |
+| `reference_date` | Atualmente o primeiro dia do mês extraído do nome | Evoluir o contrato para registrar data real da posição diária e referência mensal separadas |
+
+A proposta anteriormente chamou o instante de processamento de `processed_at`; neste caso, esse é um conceito, não uma nova coluna paralela a `_ingested_at`. Da mesma forma, `batch_id` é o conjunto recebido, enquanto `_load_id` identifica execução; podem ter relação 1:N por reprocessamento. Não criar duas chaves para o mesmo evento sem necessidade.
+
+Se for necessário auditar upload, registrar instante e remetente reais na recepção/orquestrador e relacioná-los ao lote, usando os eventos que o canal efetivamente disponibilizar. Não inferir que instante de ingestão e usuário executor são instante e autor do upload.
+
+`is_current` e `is_month_start` são seleções de posição de negócio; complementam auditoria e não a substituem. Originais da Raw e seus metadados de ingestão permanecem preservados.
+
+A orientação `skills/arquiteto-de-dados/SKILL.md` traz exemplos genéricos com `created_ts`, `updated_ts` e `created_by`, enquanto o Cadastrão implementa as colunas com sublinhado acima. Documentar essa diferença e adotar o padrão implementado neste caso; a harmonização das instruções fica para revisão documental, sem alteração de código nesta etapa.
 
 ### Flags de posição propostas
 Usar `is_current` e `is_month_start` como indicadores do lote publicado, expostos nas consultas dos dados se necessário. Conservar as datas reais, a referência mensal e o `batch_id`; flags não substituem esse histórico.
