@@ -1,0 +1,12 @@
+{
+  "cadastrao": {
+    "label": "Cadastrão",
+    "enabled": false,
+    "input_path": "/Volumes/parts_hdbk_sandbox/_file_orchestrator/<volume_de_entrada>/cadastrao",
+    "extensions": [
+      "xlsx",
+      "xls",
+      "xlsm"
+    ]
+  }
+}

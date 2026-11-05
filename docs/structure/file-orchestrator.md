@@ -68,6 +68,7 @@ Arquivo de negócio inválido pode ir para quarentena com motivo, após isolamen
 Manter estado bloqueado e alerta deduplicado para falha persistente; não repetir movimentação destrutiva ou emitir o mesmo alerta indefinidamente a cada varredura.
 
 ## 5. Rotas configuradas
+O [Databricks App de envio](../../apps/file_upload/README.md) atende vários processos. O usuário seleciona uma rota habilitada. O app usa o caminho de entrada cadastrado para essa rota e registra seu ID nos metadados do lote. O dispatcher usa a configuração de rotas para resolver o destino final.
 Cada rota contém:
 - identificador, dataset, origem produtora e responsável;
 - volume/pasta de entrada autorizado e destino técnico;
@@ -164,7 +165,7 @@ O alerta nativo fornece contexto/link da execução conforme o produto; o detalh
 Definir responsável por rota, critérios de desbloqueio e modo de retomar pelo mesmo Job. Deduplicar alertas repetidos da mesma ocorrência e registrar recuperação.
 
 ## 10. Aplicação ao Cadastrão
-1. O usuário seleciona as planilhas no [Databricks App do Cadastrão](../../apps/cadastrao_upload/README.md). O app cria uma pasta com ID único no volume de entrada e grava as planilhas e os metadados de upload. Após confirmar todas as gravações, publica `lote_pronto.txt` em UTF-8, com um nome de planilha por linha.
+1. O usuário seleciona as planilhas no [Databricks App de envio](../../apps/file_upload/README.md). O app cria uma pasta com ID único no volume de entrada e grava as planilhas e os metadados de upload. Após confirmar todas as gravações, publica `lote_pronto.txt` em UTF-8, com um nome de planilha por linha.
 2. O dispatcher periódico considera apenas pastas com `lote_pronto.txt`. Confere se todos os nomes declarados estão presentes e atendem à rota. Com o lote completo, registra e copia os arquivos para `pr_cadastrao.<source>_material_register/received/<batch_id>/`.
 3. O controle verifica se todos os arquivos/escopos esperados estão prontos.
 4. O lote só então fica elegível à ingestão Raw do Cadastrão.

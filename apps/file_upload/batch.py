@@ -4,14 +4,13 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from uuid import uuid4
 
-EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
 MAX_FILE_BYTES = 50 * 1024**2
 MAX_BATCH_BYTES = 200 * 1024**2
 
 
-def prepare_files(selected):
+def prepare_files(selected, extensions):
     if not selected:
-        raise ValueError("Selecione pelo menos uma planilha.")
+        raise ValueError("Selecione pelo menos um arquivo.")
 
     files = []
     names = set()
@@ -24,9 +23,9 @@ def prepare_files(selected):
             or "/" in name
             or chr(92) in name
             or not name.isprintable()
-            or PurePosixPath(name).suffix.lower() not in EXCEL_SUFFIXES
+            or PurePosixPath(name).suffix.lower() not in extensions
         ):
-            raise ValueError("Use planilhas Excel com nomes válidos e sem caminhos.")
+            raise ValueError("Confira as extensões permitidas e use nomes sem caminhos.")
         if name.casefold() in names:
             raise ValueError(f"Nome repetido no lote: {name}")
         if not 0 < file.size <= MAX_FILE_BYTES:
@@ -40,7 +39,7 @@ def prepare_files(selected):
     return files
 
 
-def upload_batch(storage, root, user, files):
+def upload_batch(storage, route_id, root, user, files):
     root = root.rstrip("/")
     parts = root.split("/")
     if (
@@ -48,7 +47,7 @@ def upload_batch(storage, root, user, files):
         or len(parts) < 5
         or any(part in {"", ".", ".."} for part in parts[2:])
     ):
-        raise ValueError("Configure CADASTRAO_INPUT_PATH com um caminho /Volumes válido.")
+        raise ValueError("Configure a rota com um caminho /Volumes válido.")
 
     batch_id = uuid4().hex
     batch_path = f"{root}/{batch_id}"
@@ -60,6 +59,7 @@ def upload_batch(storage, root, user, files):
 
     metadata = {
         "batch_id": batch_id,
+        "route_id": route_id,
         "uploaded_by": user,
         "upload_completed_at": datetime.now(timezone.utc).isoformat(),
         "files": [{"name": file.name, "size_bytes": file.size} for file in files],
