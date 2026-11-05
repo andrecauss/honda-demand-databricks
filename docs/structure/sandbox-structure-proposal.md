@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.6 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.7 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -144,12 +144,25 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 
 | Perfil humano confirmado | Definição de permissões |
 | --- | --- |
-| Owner | Escopo de responsabilidade e poderes administrativos a confirmar |
+| Owner | Os quatro supervisores, um por departamento, são Owners do sandbox conforme relatado por André. Podem gerenciar acessos dentro da delegação existente; não podem criar grupos de usuários atualmente |
 | Key User | Pode criar e editar notebooks, conforme confirmado por André. Escopo de execução, escrita em dados e manutenção de objetos ainda a detalhar |
 | Standard User | Pode consultar tabelas diretamente por SQL, conforme confirmado por André; não fica restrito ao agente ou dashboards. Permissões de alteração não foram concedidas nesta definição |
 | File User (nome proposto) | Upload nos volumes de entrada e download nos volumes de saída autorizados do File Orchestrator |
 
-O perfil de negócio Owner não é automaticamente a propriedade técnica de todo objeto no Unity Catalog; essa correspondência precisa ser decidida. O perfil File User, isoladamente, propõe acesso aos arquivos de intercâmbio: não inclui grants em tabelas, edição de notebooks, execução de jobs ou administração. A pessoa pode acumular outro perfil se necessário; essa combinação ainda deve ser definida. Aplicar leitura/escrita nos volumes de entrada e somente leitura nos volumes de saída autorizados, observando a limitação de upload direto descrita na seção 4. Não tratar 'upload' como garantia de impossibilidade de leitura ou exclusão na entrada.
+Os quatro supervisores são os Owners funcionais do sandbox. O TI mantém uma função administrativa superior e atualmente não permite que os Owners criem grupos de usuários. A criação desses grupos exige solicitação ao TI. O alcance exato da delegação técnica deve ser validado no ambiente, sem presumir privilégios administrativos globais.
+
+“Quatro Owners” descreve a responsabilidade relatada, não confirma quatro proprietários técnicos individuais no mesmo objeto do Unity Catalog. A forma atual de atribuição (grupo existente, propriedade de objetos ou privilégios delegados) ainda não foi inspecionada.
+
+### Implementação dos acessos e dependência do TI
+| Responsável | Atribuição confirmada ou proposta |
+| --- | --- |
+| Supervisores / Owners | Gerir acessos dentro dos privilégios já delegados; confirmar quem deve ter cada perfil |
+| TI / Admin | Administrar o ambiente e receber solicitação para criação dos grupos de usuários |
+| TI + Owners | Validar escopo, membros e responsáveis pelos grupos antes de associar permissões aos objetos |
+
+Owner, Key User, Standard User e File User são perfis funcionais da proposta; não significam grupos já existentes. Preparar um mapeamento de perfil → pessoas → operações → objetos e uma solicitação de grupos ao TI, quando o desenho estiver definido. Nenhuma solicitação foi enviada nesta etapa.
+
+A proposta de grupos não bloqueia o desenho documental. Uma aplicação transitória por usuários individuais só deve ser considerada se já for permitida pela política do TI e pela delegação dos Owners; não presumir essa autorização. Não usar caminhos alternativos para contornar a restrição de criação de grupos. O perfil File User, isoladamente, propõe acesso aos arquivos de intercâmbio: não inclui grants em tabelas, edição de notebooks, execução de jobs ou administração. A pessoa pode acumular outro perfil se necessário; essa combinação ainda deve ser definida. Aplicar leitura/escrita nos volumes de entrada e somente leitura nos volumes de saída autorizados, observando a limitação de upload direto descrita na seção 4. Não tratar 'upload' como garantia de impossibilidade de leitura ou exclusão na entrada.
 
 Os quatro departamentos não determinam, por si, perfis ou grants diferentes. Perfis podem ser implementados por grupos após detalhar suas permissões.
 
@@ -167,7 +180,7 @@ A matriz abaixo é um inventário de capacidades para discutir. Não cria perfis
 | Identidade do processo/publicador | Entradas técnicas necessárias | Escrita no output correspondente | Leitura contratada e escrita nas saídas próprias | Sem grants globais |
 | Administradores do sandbox | Conforme responsabilidade | Conforme responsabilidade | Governança e suporte | Gerem owners e grants |
 
-Todos os acessos UC exigem os privilégios de uso nos pais aplicáveis. Evitar grants amplos de leitura/escrita no catálogo ou schema que tornem ineficaz a seleção por objeto. Propriedade de objetos deve ser de grupo responsável; identidades de execução são distintas dos papéis humanos.
+Todos os acessos UC exigem os privilégios de uso nos pais aplicáveis. Evitar grants amplos de leitura/escrita no catálogo ou schema que tornem ineficaz a seleção por objeto. Atribuição de propriedade a grupos responsáveis é recomendação futura, dependente da criação ou disponibilidade de grupos autorizados pelo TI; não descreve o estado atual. Identidades de execução são distintas dos papéis humanos.
 
 Views do agente não devem ser apenas cópias sem auditoria: revisar campos de negócio autorizados, dados de cliente, cobertura, joins e granularidade. A identidade efetivamente usada pelo agente (usuário ou identidade de serviço) precisa ser confirmada. Testar acesso permitido e negado com as identidades reais, incluindo caminhos alternativos.
 
@@ -213,7 +226,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Standard User pode consultar tabelas diretamente por SQL, conforme confirmado por André. Próximo ponto: definir poderes do Owner; detalhar separadamente execução e escrita em bases.
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Standard User pode consultar tabelas diretamente por SQL, conforme confirmado por André. Owner: os quatro supervisores podem gerenciar acessos dentro da delegação existente, mas criação de grupos depende de solicitação ao TI/Admin. Pendentes: inspecionar limites efetivos da delegação e preparar o mapeamento de perfis/grupos; detalhar separadamente execução e escrita em bases.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
