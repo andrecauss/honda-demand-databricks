@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.15 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.16 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -170,6 +170,7 @@ O File User escreve no input autorizado e lê o output autorizado; não recebe a
 A implantação futura exigiria adaptar leitura de pastas, roteamento, ingestão e controles. Renomear volumes isoladamente não implementa o fluxo. Não houve alteração de código nesta branch.
 
 ## 4.2. Caso Cadastrão: evolução de carga mensal para diária
+Aplicação detalhada do fluxo: [Cadastrão — ponta a ponta](cadastrao-flow.md).
 ### Contexto informado por André
 - O Cadastrão chega pronto de processamento externo ao SAP/Databricks. Neste momento não existe uma etapa DM a reproduzir artificialmente.
 - Manter o processo em `pr_cadastrao` enquanto as transformações externas não forem incorporadas ao Databricks.
