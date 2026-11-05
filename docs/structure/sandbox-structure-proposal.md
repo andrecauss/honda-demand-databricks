@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.16 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.17 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -103,6 +103,7 @@ O mantenedor prepara e valida o objeto; registra contrato, camada, chaves, atual
 O controle por objeto exige manter uma lista de bases publicadas e revisar grants quando novos produtos entrarem. Para a estrutura atual, é uma opção de menor mudança; se o número de objetos e públicos tornar essa gestão difícil, reavaliar schemas exclusivos de consumo. A decisão futura deve considerar o esforço operacional de manter as permissões.
 
 ## 4. File Orchestrator: interface e áreas internas
+Automação proposta: [File Orchestrator — movimentação, concorrência e alertas](file-orchestrator.md).
 Separar volumes quando os públicos ou permissões diferirem. Pastas organizam; não constituem isolamento de permissões do Unity Catalog.
 
 ### Padrão de nomes de volumes — validado por André
