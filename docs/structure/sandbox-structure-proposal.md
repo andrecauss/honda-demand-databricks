@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.5 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.6 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -146,7 +146,7 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 | --- | --- |
 | Owner | Escopo de responsabilidade e poderes administrativos a confirmar |
 | Key User | Pode criar e editar notebooks, conforme confirmado por André. Escopo de execução, escrita em dados e manutenção de objetos ainda a detalhar |
-| Standard User | Canais de consulta e demais operações a confirmar |
+| Standard User | Pode consultar tabelas diretamente por SQL, conforme confirmado por André; não fica restrito ao agente ou dashboards. Permissões de alteração não foram concedidas nesta definição |
 | File User (nome proposto) | Upload nos volumes de entrada e download nos volumes de saída autorizados do File Orchestrator |
 
 O perfil de negócio Owner não é automaticamente a propriedade técnica de todo objeto no Unity Catalog; essa correspondência precisa ser decidida. O perfil File User, isoladamente, propõe acesso aos arquivos de intercâmbio: não inclui grants em tabelas, edição de notebooks, execução de jobs ou administração. A pessoa pode acumular outro perfil se necessário; essa combinação ainda deve ser definida. Aplicar leitura/escrita nos volumes de entrada e somente leitura nos volumes de saída autorizados, observando a limitação de upload direto descrita na seção 4. Não tratar 'upload' como garantia de impossibilidade de leitura ou exclusão na entrada.
@@ -213,7 +213,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Próximo ponto: definir canais de consulta do Standard User e poderes do Owner; detalhar separadamente execução e escrita em bases.
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Standard User pode consultar tabelas diretamente por SQL, conforme confirmado por André. Próximo ponto: definir poderes do Owner; detalhar separadamente execução e escrita em bases.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
