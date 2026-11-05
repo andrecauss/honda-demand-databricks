@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.8 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.9 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -64,6 +64,43 @@ Os exemplos não implicam renomeação de objetos existentes. Mapear antes de mi
 Dois arquivos de origem só podem ser tratados como o mesmo dataset após comparar sistema, extração, filtros, granularidade, chaves, referência temporal e cobertura. Diferenças reais justificam contratos distintos. Não deduplicar apenas pelo nome.
 
 Para cada fonte comum, escolher dono funcional, mantenedor técnico, periodicidade, consumidores e política de publicação. A execução de um processo não pode apagar arquivos, checkpoints ou partições de outro.
+
+## 3.1. Publicação dentro dos schemas existentes — recomendação para discussão
+Preservar os schemas por entidade e processo. Identificar a camada nas tabelas e controlar a leitura por objeto publicado é a recomendação inicial para o porte e a estrutura atuais. Esta seção é uma proposta detalhada; a distribuição exata dos objetos ainda precisa ser validada com André.
+
+| Tipo de schema | Conteúdo proposto | Consulta padrão |
+| --- | --- | --- |
+| `dm_*` | Arquivos técnicos e tabelas Raw/Trusted de dados mestres | Apenas bases Trusted publicadas; Raw para uso técnico autorizado |
+| `dt_*` | Arquivos técnicos e tabelas Raw/Trusted de dados transacionais | Apenas bases Trusted publicadas; Raw para uso técnico autorizado |
+| `pr_*` | Transformações e produtos Refined do processo; entradas Raw/Trusted específicas quando justificadas pelo contrato | Apenas produtos publicados, sem SELECT amplo no schema misto |
+| `_agents_databases` | Views aprovadas para o agente | Identidade configurada do agente e consumidores explicitamente autorizados |
+| `_file_orchestrator` | Volumes de intercâmbio | Perfis de arquivo nos volumes autorizados |
+| `_utils` | Objetos de suporte e referências publicadas | Seleção por objeto e finalidade |
+
+A distinção entre fonte compartilhada e entrada de processo depende da semântica do dado. O forecast recebido de outra ferramenta pode continuar como entrada Raw do processo `pr_forecast`; não mover todo objeto Raw automaticamente para `dm_` ou `dt_`.
+
+### Exemplo ilustrativo: clientes
+| Objeto proposto | Função | Leitores |
+| --- | --- | --- |
+| `dm_customers.raw_sap_kna1` | Preservar os registros recebidos do SAP | Rotinas técnicas e Key Users autorizados |
+| `dm_customers.trusted_sap_kna1` | Dados validados no grão da KNA1 | Standard Users e Key Users dos quatro departamentos, após publicação |
+| `dm_customers.vw_customer_general_data` | Interface opcional com colunas e nomes estáveis sobre a base publicada | Consumidores autorizados; acesso exclusivo pela view quando houver projeção/restrição necessária |
+
+Os nomes acima são exemplos e não classificam automaticamente a atual `dm_customers.kna1_sap` como Raw ou Trusted. Verificar as transformações e critérios de qualidade antes de atribuir camada e elaborar o mapa de migração.
+
+### Exemplo ilustrativo: demanda
+O processo consome as bases comuns aprovadas, aplica suas regras e publica seus produtos em `pr_demand`. Tabelas de trabalho continuam técnicas. O usuário recebe leitura nas tabelas Refined ou nas views publicadas adequadas à sua análise; não recebe todas as tabelas do schema por consequência.
+
+### Tabela publicada versus view
+- Conceder SELECT diretamente na tabela Trusted/Refined quando seu contrato e suas colunas forem apropriados ao público. Evitar criar uma view espelho para cada tabela sem necessidade.
+- Usar view quando houver necessidade de interface estável, seleção de colunas, regra de acesso ou apresentação específica. Quando a view restringir acesso, não conceder ao mesmo público leitura da tabela-base que permitiria contornar essa restrição.
+- Manter as views do agente com escopo próprio, sem obrigar todos os analistas a usar a interface do agente.
+- O prefixo `vw_` identifica tipo de objeto, não prova que foi aprovado. O registro de publicação e as permissões identificam o que está liberado.
+
+### Fluxo de publicação proposto
+O mantenedor prepara e valida o objeto; registra contrato, camada, chaves, atualização, consumidores e estado publicado; o Owner concede a leitura dentro da delegação existente, ou encaminha ao TI o que depender dele. Novas tabelas técnicas não ficam automaticamente acessíveis. Uma publicação parcial ou inválida não substitui o resultado anterior aprovado.
+
+O controle por objeto exige manter uma lista de bases publicadas e revisar grants quando novos produtos entrarem. Para a estrutura atual, é uma opção de menor mudança; se o número de objetos e públicos tornar essa gestão difícil, reavaliar schemas exclusivos de consumo. A decisão futura deve considerar o esforço operacional de manter as permissões.
 
 ## 4. File Orchestrator: interface e áreas internas
 Separar volumes quando os públicos ou permissões diferirem. Pastas organizam; não constituem isolamento de permissões do Unity Catalog.
