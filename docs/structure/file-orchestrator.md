@@ -68,7 +68,7 @@ Arquivo de negócio inválido pode ir para quarentena com motivo, após isolamen
 Manter estado bloqueado e alerta deduplicado para falha persistente; não repetir movimentação destrutiva ou emitir o mesmo alerta indefinidamente a cada varredura.
 
 ## 5. Rotas configuradas
-O [Databricks App de envio](../../apps/file_upload/README.md) atende vários processos. O usuário seleciona uma rota habilitada. O app usa o caminho de entrada cadastrado para essa rota e registra seu ID nos metadados do lote. O dispatcher usa a configuração de rotas para resolver o destino final.
+O [Databricks App de envio](../../apps/file_upload/README.md) atende vários processos. O usuário seleciona uma rota habilitada. O app consulta a tabela `_file_orchestrator.file_routes` pelo SQL Warehouse e oferece as rotas ativas com upload habilitado. Usa o caminho de entrada cadastrado e registra o ID da rota nos metadados do lote. O dispatcher usa a configuração de rotas para resolver o destino final.
 Cada rota contém:
 - identificador, dataset, origem produtora e responsável;
 - volume/pasta de entrada autorizado e destino técnico;

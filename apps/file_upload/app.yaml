@@ -1,1 +1,4 @@
 command: ["streamlit", "run", "app.py", "--server.maxUploadSize=50"]
+env:
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
