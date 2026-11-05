@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.10 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.11 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -131,6 +131,43 @@ Estados internos sugeridos: `received`, `archive`, `quarantine` para arquivos de
 Upload direto no volume exige leitura e escrita: isso também permite modificar ou excluir arquivos desse volume. Não equivale a uma caixa de envio sem leitura/exclusão. Se essa restrição for necessária, a interface de upload deverá mediar a operação; essa escolha depende da entrevista.
 
 Não registrar arquivos de dados de tabelas Delta em volumes de intercâmbio. As tabelas permanecem objetos próprios no Unity Catalog.
+
+## 4.1. Exemplo real aplicado: cadastro de clientes SAP KNA1
+Exemplo para avaliar o conceito com André. O fluxo proposto abaixo ainda não foi implementado.
+
+### Situação atual verificada no código
+- `01_demand/1.0_receive_and_move_files.ipynb` declara entrada padrão no volume `_file_orchestrator.demand`, pasta `01_apuracao_demanda/in/`, e mapeia prefixo KNA1 para o volume `dm_customers.kna1_sap`.
+- `01_demand/2.2_ingest_customer_kna1_sap.ipynb` lê Excel diretamente na raiz desse volume, concatena os arquivos, normaliza/renomeia colunas e remove zeros à esquerda de `cliente`.
+- A saída atual é a tabela `dm_customers.kna1_sap`, recriada a cada carga; o próprio notebook registra tag de camada `refined`.
+- Portanto, a saída atual não é uma cópia Raw sem tratamento. Enquadrá-la como Trusted futura exige validar o contrato e os critérios de qualidade, não apenas trocar seu nome. As duas tabelas Raw/Trusted abaixo são objetos propostos.
+- O cadastro participa do enriquecimento da demanda. A frequência e o caráter completo ou parcial dos arquivos recebidos ainda precisam ser definidos com o responsável.
+
+### Caminho proposto
+Todos os caminhos de arquivo desta tabela são relativos a `/Volumes/parts_hdbk_sandbox/`. As referências e IDs de lote/execução são exemplos.
+
+| Etapa | Objeto ou caminho proposto | Regra |
+| --- | --- | --- |
+| Upload | `_file_orchestrator/sap_kna1_input/2026-10-31/b001/` | File User envia a extração SAP completa conforme contrato |
+| Recepção técnica | `dm_customers/sap_kna1/received/b001/` | Rotina registra e verifica a cópia original antes de consumir a entrega |
+| Preservação tabular | `parts_hdbk_sandbox.dm_customers.raw_sap_kna1` | Preservar valores recebidos e metadados do lote antes de normalizar a chave do cliente |
+| Tratamento | `parts_hdbk_sandbox.dm_customers.trusted_sap_kna1` | Normalizar e validar conforme contrato; publicar somente após aprovação dos critérios |
+| Arquivo histórico | `dm_customers/sap_kna1/archive/b001/` | Guardar original da carga aceita; falhas em `quarantine/b001/`, com motivo e estado rastreável |
+| Consumo | Trusted publicada → processo `pr_demand` | Standard Users dos quatro departamentos podem consultar a base publicada; Key Users técnicos têm Raw conforme necessidade |
+| Exportação de demanda, quando executada | `_file_orchestrator/databricks_historical_demand_output/2026-10/r001/` | Publicar os arquivos finais de demanda e ZIP daquela execução após validação |
+
+`sap_kna1_input`, `sap_kna1` e `databricks_historical_demand_output` são três volumes distintos, em schemas identificados na tabela. Os elementos seguintes são pastas. O nome do volume segue origem + dado; a finalidade aparece no nome quando distingue a interface de acesso.
+
+O File User escreve no input autorizado e lê o output autorizado; não recebe acesso técnico à Raw ou ao arquivo histórico por esse perfil. As identidades do processo têm os acessos técnicos necessários. A exportação final pertence ao processo de demanda; o cadastro KNA1 não precisa gerar um arquivo de saída próprio se não houver consumidor para ele.
+
+### Pontos que este exemplo permite validar
+- Preservação do dado original antes de transformações, como retirar zeros do código do cliente.
+- Definição de uma extração completa por lote; não concatenar períodos diferentes por acidente.
+- Critérios de publicação, como chaves não nulas, unicidade no grão definido e totais reconciliados.
+- Folders de recebimento/histórico são estados; input/output separados atendem a públicos com permissões diferentes.
+- Fonte compartilhada tem uma carga oficial; quatro departamentos consomem a mesma versão publicada.
+- Mês de referência do cadastro e referência da demanda podem diferir; registrar a versão do cadastro usada na execução.
+
+A implantação futura exigiria adaptar leitura de pastas, roteamento, ingestão e controles. Renomear volumes isoladamente não implementa o fluxo. Não houve alteração de código nesta branch.
 
 ## 5. Ciclo de vida de um arquivo
 1. Receber: identificar dataset, remetente, nome original, referência, instante e `batch_id`; só liberar para processamento após entrega completa.
