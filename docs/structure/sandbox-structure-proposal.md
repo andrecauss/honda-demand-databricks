@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.4 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.5 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -145,7 +145,7 @@ Os registros devem distinguir arquivo recebido, arquivo ingerido, transformaçã
 | Perfil humano confirmado | Definição de permissões |
 | --- | --- |
 | Owner | Escopo de responsabilidade e poderes administrativos a confirmar |
-| Key User | Poderes de desenvolvimento, execução e manutenção a confirmar |
+| Key User | Pode criar e editar notebooks, conforme confirmado por André. Escopo de execução, escrita em dados e manutenção de objetos ainda a detalhar |
 | Standard User | Canais de consulta e demais operações a confirmar |
 | File User (nome proposto) | Upload nos volumes de entrada e download nos volumes de saída autorizados do File Orchestrator |
 
@@ -213,7 +213,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Próximo ponto: definir capacidades de cada perfil, começando pelo Key User.
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User; acrescentado perfil de upload/download no File Orchestrator, com nome proposto File User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Key User pode criar e editar notebooks, conforme confirmado por André. Próximo ponto: definir canais de consulta do Standard User e poderes do Owner; detalhar separadamente execução e escrita em bases.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
