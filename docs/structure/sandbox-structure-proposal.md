@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.12 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.13 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -176,7 +176,8 @@ A implantação futura exigiria adaptar leitura de pastas, roteamento, ingestão
 - Atualmente são recebidos dois arquivos Excel por mês; a quantidade de arquivos aumentará. Não fixar a regra em cinco arquivos.
 - Objetivo: receber arquivos a cada dia útil, unificar o conjunto e produzir várias tabelas a partir da entrada Raw.
 - Algumas áreas precisam da primeira posição do mês; outras precisam da posição atual.
-- Ainda confirmar se cada conjunto diário é uma fotografia completa ou apenas alterações. Também confirmar o significado operacional de primeira posição do mês.
+- Confirmado por André: cada envio diário traz novamente a base completa, e não apenas registros novos/alterados. Ainda confirmar a composição e os escopos dos arquivos do lote e a regra da primeira posição mensal.
+- André sugeriu identificar o estado atual com `is_current` e sinalizar a primeira posição do mês.
 
 Este é o caso prioritário trazido pelo usuário para testar a proposta. O exemplo KNA1 anterior permanece somente como ilustração, não substitui o processo explicado por André.
 
@@ -197,7 +198,7 @@ Os nomes e metadados atuais atribuem a fonte a SAP. O relato do usuário esclare
 
 O mapeamento anterior que sugeria transferir o arquivo para `dm_materials` não se aplica automaticamente a este caso. A localização atual por processo é preservada, conforme a explicação de André.
 
-### Fluxo recomendado, assumindo fotografias completas por lote
+### Fluxo recomendado para fotografias completas por lote
 1. Receber os arquivos esperados do lote diário, cuja composição será configurável por origem/empresa/centro e contrato, não por uma quantidade fixa.
 2. Registrar os arquivos originais, checksum e escopo; checar completude do conjunto. Arquivos que chegam em momentos diferentes não devem publicar uma fotografia parcial como se fosse completa.
 3. Preservar o conteúdo recebido na Raw com identificação de lote e origem, antes das transformações do Databricks. Raw é o dado tal como recebido nesta fronteira, mesmo que a origem externa já o tenha processado.
@@ -227,10 +228,29 @@ Para atributos técnicos que mudam pouco, SCD2 é uma alternativa/complemento: n
 
 Se os arquivos forem deltas, será necessário reconstruir o estado completo antes de publicar as duas referências; ausência de um material no arquivo não significa exclusão. Mesmo com fotografia completa, interpretar ausências somente dentro do escopo completo validado.
 
-A proposta ainda não fixa todos os dados em snapshots diários nem adota SCD2 para todas as colunas. Fotografia completa versus delta, grãos de cada produto, volume e retenção orientam a decisão final.
+O formato de entrada completa está confirmado. Para a proposta inicial, preservar os lotes completos recebidos e publicar fotografias validadas permite atender às duas posições diretamente. Grãos dos produtos, volume e retenção ainda orientam a materialização final; não adotar SCD2 indiscriminadamente para todas as colunas.
+
+### Flags de posição propostas
+Usar `is_current` e `is_month_start` como indicadores do lote publicado, expostos nas consultas dos dados se necessário. Conservar as datas reais, a referência mensal e o `batch_id`; flags não substituem esse histórico.
+
+Manter a seleção em um controle de lotes/referências e derivar as flags nas views, evitando reescrever todos os registros Raw anteriores a cada atualização. Se houver materialização posterior, sincronizar com a mesma seleção oficial.
+
+| Momento ilustrativo | Lote | is_current | is_month_start |
+| --- | --- | --- | --- |
+| Após publicação da primeira posição de novembro | Lote A, escolhido como referência mensal | true | true |
+| Após publicação da posição seguinte | Lote A | false | true |
+| Após publicação da posição seguinte | Lote B, mais recente válido | true | false |
+
+`is_current`: apenas um lote válido/completo selecionado como posição atual por escopo de publicação. Usar a data de negócio e a revisão aprovada, não simplesmente o arquivo que chegou por último.
+
+`is_month_start`: apenas um lote de referência por mês e escopo; referências dos meses anteriores continuam preservadas. A primeira posição de dezembro não apaga a referência de novembro. A regra de escolha ainda precisa ser confirmada; pode ser automática segundo calendário/validação ou seleção explícita autorizada.
+
+As flags se aplicam à fotografia coerente, não à primeira aparição de cada material. Todas as linhas daquele lote herdam a seleção. Isso evita montar uma posição com datas diferentes por item. Uma falha de carga mantém o último lote publicado como atual.
+
+Fotografia completa facilita a reconstrução do estado, mas exige armazenamento e processamento dos lotes. Não calcular custo ou retenção sem volume real. Manter arquivos originais e Raw/Trusted conforme política a definir; otimizar posteriormente sem perder as referências prometidas.
 
 ### Pergunta seguinte
-Cada envio diário contém novamente a base completa de cada escopo ou apenas registros novos/alterados?
+A primeira posição mensal deve ser escolhida automaticamente como o primeiro lote completo e válido do mês ou marcada explicitamente pelo responsável?
 
 ## 5. Ciclo de vida de um arquivo
 1. Receber: identificar dataset, remetente, nome original, referência, instante e `batch_id`; só liberar para processamento após entrega completa.
