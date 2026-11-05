@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.14 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.15 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -250,6 +250,22 @@ Se for necessário auditar upload, registrar instante e remetente reais na recep
 `is_current` e `is_month_start` são seleções de posição de negócio; complementam auditoria e não a substituem. Originais da Raw e seus metadados de ingestão permanecem preservados.
 
 A orientação `skills/arquiteto-de-dados/SKILL.md` traz exemplos genéricos com `created_ts`, `updated_ts` e `created_by`, enquanto o Cadastrão implementa as colunas com sublinhado acima. Documentar essa diferença e adotar o padrão implementado neste caso; a harmonização das instruções fica para revisão documental, sem alteração de código nesta etapa.
+
+### Upload e ingestão: eventos distintos — definido por André
+Mapear separadamente os dois eventos; os mesmos valores só podem aparecer quando os eventos reais coincidirem, nunca por preenchimento automático de um com os dados do outro.
+
+| Evento | Data/hora | Usuário ou identidade | Grão e origem do registro |
+| --- | --- | --- | --- |
+| Upload | `_uploaded_at` (nome proposto) | `_uploaded_by` (nome proposto) | Por arquivo/entrega, capturado no canal de upload/recepção |
+| Ingestão | `_ingested_at` (existente) | `_ingested_by` (existente) | Por execução, capturado no processamento do Databricks |
+
+`_last_updated_at` continua registrando a atualização do registro conforme seu contrato; não substitui o horário do upload nem a data da posição de negócio.
+
+O registro de arquivos relaciona o identificador de entrega, nome original, caminho completo do arquivo, remetente e instante de upload ao lote de negócio. O registro de execução relaciona esse lote ao `_load_id`, instante da ingestão e identidade executora. Um lote pode reunir arquivos enviados por pessoas diferentes; não atribuir ao lote um único remetente fictício. Um arquivo pode participar de mais de uma execução em reprocessamentos.
+
+A futura ingestão preservará a relação de cada linha com seu arquivo de origem quando aplicável, para permitir consultar a auditoria dos dois eventos sem replicar metadados contraditórios. Após agregações ou joins, manter a linhagem aos arquivos/lotes envolvidos, em vez de escolher arbitrariamente um remetente.
+
+No desenho de implementação, confirmar como o canal atual disponibiliza o horário real e o autor do upload. Instante de descoberta do arquivo não é automaticamente instante de upload; usuário do job não é automaticamente remetente. Se o canal não fornecer um desses dados, registrar a indisponibilidade e definir como capturá-lo, sem inventar valores.
 
 ### Flags de posição propostas
 Usar `is_current` e `is_month_start` como indicadores do lote publicado, expostos nas consultas dos dados se necessário. Conservar as datas reais, a referência mensal e o `batch_id`; flags não substituem esse histórico.
