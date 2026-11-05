@@ -1,0 +1,4 @@
+command: ["streamlit", "run", "app.py", "--server.maxUploadSize=50"]
+env:
+  - name: CADASTRAO_INPUT_PATH
+    value: ""

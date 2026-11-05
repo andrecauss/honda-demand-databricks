@@ -4,7 +4,7 @@ Versão 0.1 · 2026-11-05 · Especificação para discussão.
 ## Decisão recomendada
 Usar um Lakeflow Job do Databricks com uma tarefa de notebook Python como executor. O Job controla agendamento, concorrência, tentativas, timeout e alertas. O notebook implementa descoberta, roteamento, cópia verificada, registros de estado e recuperação.
 
-Começar com uma varredura periódica das entradas cadastradas. Intervalo inicial proposto: 5 minutos, ajustável após medir latência necessária, volume, duração e custo do compute. Não é um prazo de execução garantido nem uma configuração já aplicada.
+Começar com uma varredura periódica das entradas cadastradas. Intervalo inicial proposto: 30 minutos, ajustável após medir latência necessária, volume, duração e custo do compute. Não é um prazo de execução garantido nem uma configuração já aplicada.
 
 Esta entrega é uma proposta do notebook e de sua operação. Não cria ou altera notebooks executáveis, Jobs, permissões, notificações ou arquivos de dados. Nenhuma mensagem foi enviada a usuários.
 
@@ -50,7 +50,7 @@ Uma identidade técnica executa o Job. Os usuários de upload/download acessam o
 - Um único Job autorizado a realizar as movimentações gerenciadas.
 - `max_concurrent_runs = 1` configurado explicitamente.
 - Uma tarefa executora; operações de arquivos sequenciais, sem branches paralelos de movimentação.
-- Intervalo de 5 minutos como parâmetro inicial proposto.
+- Intervalo de 30 minutos como parâmetro inicial proposto.
 - Para este modo de varredura, desabilitar fila de execuções periódicas: um horário que coincida com execução ativa pode ser ignorado; a próxima varredura reconcilia tudo que continuar pendente.
 - O horário ignorado não é a unidade de trabalho. Os arquivos e seus estados persistidos são a fila de trabalho; continuam disponíveis até conclusão.
 - Configurar explicitamente tentativas e timeout; não depender de defaults do workspace.
@@ -126,7 +126,7 @@ Se o Job cair após a cópia e antes da remoção, a execução seguinte reconhe
 
 Mesmo nome e mesmo conteúdo é reenvio/reconciliação. Mesmo nome com conteúdo diferente é conflito ou revisão explícita. Não sobrescrever silenciosamente.
 
-Tamanho estável em duas observações ajuda a evitar cópias prematuras, mas não comprova sozinho entrega completa. Preferir confirmação explícita do canal, manifesto ou marcador de entrega finalizada. A implementação dessa confirmação depende da interface de upload, ainda não identificada.
+Tamanho estável em duas observações ajuda a evitar cópias prematuras, mas não comprova sozinho entrega completa. Preferir confirmação explícita do canal, manifesto ou marcador de entrega finalizada. No Cadastrão, o Databricks App confirma o lote com o manifesto descrito na seção 10.
 
 ## 8. Estados e auditoria
 | Estado | Significado |
@@ -164,8 +164,8 @@ O alerta nativo fornece contexto/link da execução conforme o produto; o detalh
 Definir responsável por rota, critérios de desbloqueio e modo de retomar pelo mesmo Job. Deduplicar alertas repetidos da mesma ocorrência e registrar recuperação.
 
 ## 10. Aplicação ao Cadastrão
-1. Usuário entrega os Excel em `_file_orchestrator.<source>_material_register_input`.
-2. O dispatcher periódico identifica a entrega, espera sua confirmação, registra e copia os arquivos para `pr_cadastrao.<source>_material_register/received/<batch_id>/`.
+1. O usuário seleciona as planilhas no [Databricks App do Cadastrão](../../apps/cadastrao_upload/README.md). O app cria uma pasta com ID único no volume de entrada e grava as planilhas e os metadados de upload. Após confirmar todas as gravações, publica `lote_pronto.txt` em UTF-8, com um nome de planilha por linha.
+2. O dispatcher periódico considera apenas pastas com `lote_pronto.txt`. Confere se todos os nomes declarados estão presentes e atendem à rota. Com o lote completo, registra e copia os arquivos para `pr_cadastrao.<source>_material_register/received/<batch_id>/`.
 3. O controle verifica se todos os arquivos/escopos esperados estão prontos.
 4. O lote só então fica elegível à ingestão Raw do Cadastrão.
 5. O pipeline de negócio unifica, valida e publica posição atual/mensal, conforme [fluxo do Cadastrão](cadastrao-flow.md).
@@ -195,7 +195,7 @@ Fila de execuções pode ser apropriada no modo por eventos; sua política deve 
 - Conferir permissões de input/output e ausência de caminhos fora das rotas aprovadas.
 
 ## 13. Decisões pendentes
-Intervalo e janela de operação; canal de upload e confirmação; arquivos esperados por lote; destinatários dos alertas; identidade/compute do Job; limites delegados aos Owners; política de bloqueio/continuidade; retenção e parâmetros de tentativas/timeout.
+Janela de operação; arquivos esperados por lote; destinatários dos alertas; identidade/compute do Job; limites delegados aos Owners; política de bloqueio/continuidade; retenção e parâmetros de tentativas/timeout.
 
 A proposta pode ser revisada antes de implementação. Não há automação ativa criada por este documento.
 
