@@ -1,5 +1,5 @@
 # Proposta de estrutura do sandbox compartilhado
-Versão 0.2 — 2026-11-05 — Rascunho para discussão com André.
+Versão 0.3 — 2026-11-05 — Rascunho para discussão com André.
 
 ## Escopo e estado
 Esta branch contém somente documentação. Nenhum notebook, arquivo operacional, schema, volume, tabela, view, permissão ou job foi modificado no Databricks. Os nomes e caminhos de destino abaixo são propostas, não objetos já criados.
@@ -135,8 +135,23 @@ Controles propostos no suporte, sujeitos a desenho detalhado:
 
 Os registros devem distinguir arquivo recebido, arquivo ingerido, transformação concluída e resultado publicado. Versão Delta permite reprodução apenas enquanto seus dados permanecerem retidos; para fechamentos de longa duração, definir snapshot persistido ou retenção compatível.
 
-## 8. Perfis de acesso propostos
-Grupos são papéis, não os quatro departamentos. Uma pessoa pode ter vários papéis aprovados.
+## 8. Perfis de acesso
+### Definições confirmadas na entrevista
+- Demand, Inventory Long Term, Inventory Short Term e Spec podem consultar as mesmas bases compartilhadas. Não há, neste momento, restrição de consulta por departamento.
+- A distinção de acesso humano é por perfil: Owner, Key User e Standard User. Os nomes permanecem em inglês.
+- Consulta compartilhada não define automaticamente permissões de escrita, alteração de notebooks, execução de jobs ou administração.
+- As responsabilidades dos processos de Inventory Long Term e Inventory Short Term foram adiadas por André e poderão ser preenchidas no futuro; não bloqueiam a proposta inicial.
+
+| Perfil humano confirmado | Definição de permissões |
+| --- | --- |
+| Owner | Escopo de responsabilidade e poderes administrativos a confirmar |
+| Key User | Poderes de desenvolvimento, execução e manutenção a confirmar |
+| Standard User | Canais de consulta e operações de upload/download a confirmar |
+
+O perfil de negócio Owner não é automaticamente a propriedade técnica de todo objeto no Unity Catalog; essa correspondência precisa ser decidida. Os quatro departamentos não determinam, por si, perfis ou grants diferentes. Perfis podem ser implementados por grupos após detalhar suas permissões.
+
+### Capacidades técnicas propostas, ainda não atribuídas aos três perfis
+A matriz abaixo é um inventário de capacidades para discutir. Não cria perfis humanos adicionais nem afirma que o usuário aprovou as atribuições. As identidades técnicas dos jobs são tratadas separadamente.
 
 | Papel | Arquivos de entrada | Saída publicada | Bases/tabelas | Administração |
 | --- | --- | --- | --- | --- |
@@ -195,7 +210,7 @@ Departamentos ficam como owners nos contratos. Ainda não mover arquivos: extens
 7. O inventário documenta `material_cadastrao` como raw com colunas STRING; não classificá-lo como trusted só pelo uso atual ou pelo schema.
 
 ## 12. Entrevista e implantação futura
-Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Próxima pergunta: quais são os principais processos de cada departamento, começando pela distinção entre Inventory Long Term e Inventory Short Term?
+Departamentos definidos: Demand, Inventory Long Term, Inventory Short Term e Spec. Consulta às bases compartilhadas permitida aos quatro, sem distinção por departamento neste momento. Perfis humanos: Owner, Key User e Standard User. Responsabilidades específicas de Inventory Long Term e Inventory Short Term ficam pendentes para uma etapa futura, conforme orientação de André. Próximo ponto: definir capacidades de cada perfil, começando pelo Key User.
 
 Depois, definir em conversa:
 - Quem envia arquivos, quem só baixa, quem desenvolve e quem usa o agente?
